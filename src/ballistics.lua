@@ -357,11 +357,13 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 	Shoot(muzzlePos, dir, self.bulletType, finalDamage * self.holeScale, self.range, p, self.toolId)
 
 	-- Counteract excess physics push from Shoot()
-	-- pushScale=0 means no push at all, 0.5 means half push, 1.0 means full (default)
+	-- Push scales with distance using the same falloff curve as damage —
+	-- point blank = full push, far away = barely moves
 	if velBefore and hitBody ~= 0 and IsBodyDynamic(hitBody) then
 		local velAfter = GetBodyVelocity(hitBody)
 		local impulse = VecSub(velAfter, velBefore)
-		local reduction = VecScale(impulse, 1.0 - self.pushScale)
+		local pushAtDist = self.pushScale * falloff  -- falloff already computed for this shot
+		local reduction = VecScale(impulse, 1.0 - pushAtDist)
 		SetBodyVelocity(hitBody, VecSub(velAfter, reduction))
 	end
 
