@@ -1,10 +1,12 @@
--- Realistic Ballistics Framework for Teardown v2 Multiplayer
--- Include this in weapon mods: #include "lib/ballistics.lua"
+-- Trust Realism — Ballistics Framework for Teardown v2 Multiplayer
+-- https://github.com/trustxix/trust-realism
+-- Include in weapon mods: #include "lib/ballistics.lua"
 --
 -- Features:
 --   - Configurable per-weapon damage profiles
 --   - Exponential distance falloff with full-power close range zone
 --   - Decoupled hole size vs penetration depth (Shoot + MakeHole)
+--   - Material resistance (pellets less effective vs metal, more vs wood)
 --   - Uniform disk spread (sqrt distribution — no center stacking)
 --   - GetPlayerAimInfo-based aiming (shoots where crosshair points)
 --   - 100% server-side, MP-safe (Shoot auto-syncs)
@@ -13,7 +15,7 @@
 --   local shotgun = CreateBallisticsProfile({
 --       damage = 28, pellets = 24, spread = 0.07,
 --       range = 50, toolId = "my-shotgun",
---       holeScale = 0.5, penetrationScale = 1.0,
+--       holeScale = 0.5, penScale = 1.0,
 --       fullRange = 8, halfRange = 25, minFalloff = 0.15,
 --   })
 --
@@ -24,10 +26,46 @@
 --   shotgun:FireFromTool(toolBody, muzzleOffset, p)
 
 -- ============================================================
+-- Default material resistance table
+-- ============================================================
+-- Multiplier on damage/penetration when hitting this material.
+-- < 1.0 = less effective (pellets bounce off / barely scratch)
+-- = 1.0 = normal effectiveness
+-- > 1.0 = more effective (pellets tear through easily)
+
+DEFAULT_MATERIAL_RESISTANCE = {
+	glass        = 1.5,   -- shatters easily
+	foliage      = 1.8,   -- leaves and branches, no resistance
+	plaster      = 1.3,   -- drywall, crumbles
+	dirt          = 1.2,   -- soft ground
+	plastic      = 1.1,   -- thin plastic
+	wood         = 1.0,   -- baseline material
+	ice          = 0.9,   -- slightly harder than wood
+	masonry      = 0.6,   -- brick, significant resistance
+	rock         = 0.5,   -- stone, hard to penetrate
+	hardmasonry  = 0.35,  -- reinforced concrete
+	metal        = 0.25,  -- steel plate, very resistant
+	heavymetal   = 0.15,  -- thick steel, barely scratched
+	hardmetal    = 0.1,   -- hardened steel, almost impervious
+	unphysical   = 1.0,   -- default for non-physical
+}
+
+-- ============================================================
 -- Profile creation
 -- ============================================================
 
 function CreateBallisticsProfile(cfg)
+	-- Merge custom material overrides with defaults
+	local materials = {}
+	for k, v in pairs(DEFAULT_MATERIAL_RESISTANCE) do
+		materials[k] = v
+	end
+	if cfg.materials then
+		for k, v in pairs(cfg.materials) do
+			materials[k] = v
+		end
+	end
+
 	local profile = {
 		-- Damage
 		damage       = cfg.damage or 10,        -- base damage per projectile
@@ -47,6 +85,10 @@ function CreateBallisticsProfile(cfg)
 		holeScale    = cfg.holeScale or 1.0,     -- Shoot() damage multiplier (controls crater size)
 		penScale     = cfg.penScale or 0,        -- extra MakeHole hard penetration (0 = no extra, >0 = punch deeper)
 
+		-- Material resistance
+		materials    = materials,                 -- material name -> damage multiplier
+		useMaterials = cfg.useMaterials ~= false, -- enabled by default, set false to disable
+
 		-- Identity
 		toolId       = cfg.toolId or "unknown",  -- kill feed attribution
 	}
@@ -59,6 +101,15 @@ end
 -- ============================================================
 
 BallisticsProfile = {}
+
+--- Get damage multiplier for hitting a specific material.
+-- Returns a value from the materials table, or 1.0 if unknown.
+function BallisticsProfile:GetMaterialMultiplier(shape, hitPos)
+	if not self.useMaterials or shape == 0 then return 1.0 end
+	local ok, mat = pcall(GetShapeMaterialAtPosition, shape, hitPos)
+	if not ok or not mat or mat == "" then return 1.0 end
+	return self.materials[mat] or 1.0
+end
 
 --- Calculate damage falloff multiplier for a given distance.
 -- Returns 1.0 within fullRange, exponential decay after, floored at minFalloff.
@@ -97,15 +148,22 @@ end
 -- Firing
 -- ============================================================
 
---- Fire a single projectile with falloff and decoupled penetration.
+--- Fire a single projectile with falloff, material resistance, and decoupled penetration.
 -- Call on SERVER only. Shoot() auto-syncs to all clients.
 function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 	local damage = self.damage / 100
 
-	-- Pre-cast to find distance for custom falloff
-	local hit, dist = QueryRaycast(muzzlePos, dir, self.range)
+	-- Pre-cast to find distance, shape, and material
+	local hit, dist, normal, shape = QueryRaycast(muzzlePos, dir, self.range)
 	local falloff = hit and self:GetFalloff(dist) or 1.0
 	local finalDamage = damage * falloff
+
+	-- Material resistance: reduce damage against hard materials
+	if hit and shape and shape ~= 0 then
+		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
+		local matMult = self:GetMaterialMultiplier(shape, hitPos)
+		finalDamage = finalDamage * matMult
+	end
 
 	-- Shoot() with holeScale controls visible crater size
 	Shoot(muzzlePos, dir, self.bulletType, finalDamage * self.holeScale, self.range, p, self.toolId)
