@@ -1333,3 +1333,102 @@ function OptionsMenu:Draw(p)
 		self.open = false
 	end
 end
+
+-- ============================================================
+-- Master tool panel (dynamic discovery)
+-- ============================================================
+-- Scans all registered options menus and shows shortcuts to active tools only.
+-- Checks if each tool is actually enabled in the game before displaying.
+-- Any mod can open this panel -- it replaces the hardcoded All_In_One_Utilities approach.
+
+_MASTER_PANEL_OPEN = false
+
+function ToggleMasterPanel()
+	_MASTER_PANEL_OPEN = not _MASTER_PANEL_OPEN
+	-- Close any open individual menus when opening master panel
+	if _MASTER_PANEL_OPEN then
+		for _, menu in pairs(_OPTIONS_MENUS) do
+			menu.open = false
+		end
+	end
+end
+
+function IsMasterPanelOpen()
+	return _MASTER_PANEL_OPEN
+end
+
+--- Get list of tools that are currently active in the game and have options.
+function GetActiveToolsWithOptions()
+	local active = {}
+	for toolId, menu in pairs(_OPTIONS_MENUS) do
+		-- Check if tool is enabled via registry key
+		local enabledKey = "game.tool." .. toolId .. ".enabled"
+		local isActive = HasKey(enabledKey) and GetBool(enabledKey)
+		if isActive then
+			active[#active + 1] = { toolId = toolId, menu = menu }
+		end
+	end
+	-- Sort alphabetically for consistent display
+	table.sort(active, function(a, b) return a.toolId < b.toolId end)
+	return active
+end
+
+--- Draw the master tool options panel. Call in client.draw.
+-- Shows buttons for each active tool -- clicking opens that tool's options.
+function DrawMasterPanel(p)
+	if not _MASTER_PANEL_OPEN then return end
+
+	local tools = GetActiveToolsWithOptions()
+	local panelHeight = 80 + #tools * 40 + 20
+
+	if #tools == 0 then
+		panelHeight = 120
+	end
+
+	UiMakeInteractive()
+	UiPush()
+	UiTranslate(UiCenter() - 180, UiMiddle() - panelHeight / 2)
+	UiAlign("top left")
+	UiColor(0, 0, 0, 0.9)
+	UiImageBox("ui/common/box-solid-6.png", 360, panelHeight, 6, 6)
+
+	-- Title
+	UiTranslate(180, 30)
+	UiAlign("center middle")
+	UiColor(1, 1, 1)
+	UiFont("bold.ttf", 20)
+	UiText("Tool Options")
+
+	UiTranslate(-150, 20)
+	UiAlign("left middle")
+	UiFont("regular.ttf", 16)
+	UiButtonImageBox("ui/common/box-outline-6.png", 6, 6)
+
+	if #tools == 0 then
+		UiTranslate(0, 30)
+		UiColor(0.6, 0.6, 0.6)
+		UiText("No tools with options active")
+	else
+		for _, entry in ipairs(tools) do
+			UiTranslate(0, 35)
+			UiColor(0.3, 0.7, 1)
+			if UiTextButton(entry.toolId, 300, 28) then
+				_MASTER_PANEL_OPEN = false
+				entry.menu.open = true
+			end
+		end
+	end
+
+	-- Close button
+	UiTranslate(0, 45)
+	UiColor(1, 0.4, 0.4)
+	if UiTextButton("Close", 80, 28) then
+		_MASTER_PANEL_OPEN = false
+	end
+
+	UiPop()
+
+	if InputPressed("esc") then
+		_MASTER_PANEL_OPEN = false
+	end
+end
