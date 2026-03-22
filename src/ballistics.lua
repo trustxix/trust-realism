@@ -372,10 +372,12 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 		local baseDamage = self.damage / 100
 		local penetrationRatio = math.min(finalDamage / baseDamage, 1.0)
 
-		-- Invert: high penetration = low push, low penetration = more push
-		-- At full power point blank: penetrationRatio ~1.0 → absorbed ~0.05 (5%)
-		-- At far range weak hit: penetrationRatio ~0.15 → absorbed ~0.85 (85%)
-		local absorbed = 1.0 - penetrationRatio * 0.95
+		-- Exponential inverse: high penetration = low push, low penetration = more push
+		-- penetrationRatio 1.0 (full power, passes through) → absorbed ≈ 0.05
+		-- penetrationRatio 0.5 (half power)                 → absorbed ≈ 0.22
+		-- penetrationRatio 0.1 (weak, stops inside)         → absorbed ≈ 0.73
+		-- penetrationRatio 0.0 (no damage at all)           → absorbed = 1.0
+		local absorbed = math.pow(0.05, penetrationRatio)
 
 		local effectivePush = self.pushScale * falloff * absorbed
 		local reduction = VecScale(impulse, 1.0 - effectivePush)
