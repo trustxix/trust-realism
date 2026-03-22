@@ -1219,50 +1219,91 @@ function OptionsMenu:IsOpen()
 end
 
 --- Draw the options panel. Call in client.draw. Host-only interactive.
--- Per UI_STANDARDS.md: UiMakeInteractive, dark background, centered panel.
+-- All elements positioned relative to panel bounds -- nothing bleeds outside.
+-- Scroll support when too many fields to fit.
 function OptionsMenu:Draw(p)
 	if not self.open then return end
 
+	-- Layout constants (all relative to panel)
+	local PW = 380          -- panel width
+	local PAD = 20          -- padding inside panel
+	local ROW_H = 40        -- height per field row
+	local TITLE_H = 50      -- title area height
+	local BUTTON_H = 45     -- bottom buttons area
+	local LABEL_W = 140     -- label text width
+	local SLIDER_W = 120    -- slider bar width
+	local VALUE_W = 50      -- value text width
+	local INNER_W = PW - PAD * 2  -- usable width inside panel
+
 	local fieldCount = #self.fields
-	local panelHeight = 80 + fieldCount * 50 + 60
+	local maxVisible = math.floor((UiHeight() * 0.7 - TITLE_H - BUTTON_H) / ROW_H)
+	local needsScroll = fieldCount > maxVisible
+	local visibleCount = needsScroll and maxVisible or fieldCount
+	local contentH = TITLE_H + visibleCount * ROW_H + BUTTON_H
+
+	-- Scroll state
+	if not self._scroll then self._scroll = 0 end
+	if needsScroll then
+		local wheel = InputValue("mousewheel")
+		if wheel ~= 0 then
+			self._scroll = math.max(0, math.min(self._scroll - wheel, fieldCount - visibleCount))
+		end
+	end
 
 	UiMakeInteractive()
 	UiPush()
-	UiTranslate(20, UiMiddle() - panelHeight / 2)
+	UiTranslate(UiCenter() - PW / 2, UiMiddle() - contentH / 2)
 	UiAlign("top left")
-	UiColor(0, 0, 0, 0.85)
-	UiImageBox("ui/common/box-solid-6.png", 420, panelHeight, 6, 6)
+
+	-- Background
+	UiColor(0, 0, 0, 0.9)
+	UiImageBox("ui/common/box-solid-6.png", PW, contentH, 6, 6)
 
 	-- Title
-	UiTranslate(210, 30)
+	UiPush()
+	UiTranslate(PW / 2, TITLE_H / 2)
 	UiAlign("center middle")
 	UiColor(1, 1, 1)
-	UiFont("bold.ttf", 20)
-	UiText(self.toolId .. " Options")
+	UiFont("bold.ttf", 18)
+	UiText(self.toolId)
+	UiPop()
 
 	-- Fields
-	UiTranslate(-180, 30)
-	UiFont("regular.ttf", 16)
-	UiAlign("left middle")
+	UiTranslate(PAD, TITLE_H)
+	UiFont("regular.ttf", 14)
 
-	for _, f in ipairs(self.fields) do
-		UiTranslate(0, 45)
+	local startIdx = math.floor(self._scroll) + 1
+	local endIdx = math.min(startIdx + visibleCount - 1, fieldCount)
+
+	for idx = startIdx, endIdx do
+		local f = self.fields[idx]
 		local val = self:Get(f.key)
+		local y = (idx - startIdx) * ROW_H
 
 		if f.type == "slider" then
+			-- Label (left)
+			UiPush()
+			UiTranslate(0, y + ROW_H / 2)
+			UiAlign("left middle")
 			UiColor(1, 1, 1, 0.9)
 			UiText(f.label)
+			UiPop()
 
-			UiPush()
-			UiTranslate(220, -8)
-			UiColor(0.2, 0.6, 1)
+			-- Slider bar + dot (center)
+			local sliderX = LABEL_W + 5
+			local sliderY = y + ROW_H / 2
 			local range = f.max - f.min
 			local norm = (val - f.min) / range
-			local w = 140
-			UiRect(w, 3)
-			UiAlign("center middle")
-			UiTranslate(-140, 1)
-			norm = UiSlider("ui/common/dot.png", "x", norm * w, 0, w) / w
+
+			UiPush()
+			UiTranslate(sliderX, sliderY - 1)
+			UiAlign("left middle")
+			UiColor(0.3, 0.3, 0.3)
+			UiRect(SLIDER_W, 3)
+			UiColor(0.2, 0.6, 1)
+			UiRect(norm * SLIDER_W, 3)
+			-- Slider dot (on the bar)
+			norm = UiSlider("ui/common/dot.png", "x", norm * SLIDER_W, 0, SLIDER_W) / SLIDER_W
 			local step = f.step or 1
 			local newVal = math.floor((norm * range + f.min) / step + 0.5) * step
 			if newVal ~= val and IsPlayerHost() then
@@ -1270,10 +1311,11 @@ function OptionsMenu:Draw(p)
 			end
 			UiPop()
 
+			-- Value text (right of slider, inside panel)
 			UiPush()
-			UiTranslate(370, 0)
-			UiColor(0.7, 0.6, 0.1)
+			UiTranslate(sliderX + SLIDER_W + 8, sliderY)
 			UiAlign("left middle")
+			UiColor(0.7, 0.6, 0.1)
 			if step < 1 then
 				UiText(string.format("%.1f", newVal or val))
 			else
@@ -1282,20 +1324,25 @@ function OptionsMenu:Draw(p)
 			UiPop()
 
 		elseif f.type == "toggle" then
+			UiPush()
+			UiTranslate(0, y + ROW_H / 2)
+			UiAlign("left middle")
 			UiColor(1, 1, 1, 0.9)
 			UiText(f.label)
+			UiPop()
 
 			UiPush()
-			UiTranslate(250, 0)
+			UiTranslate(LABEL_W + 5, y + ROW_H / 2 - 12)
+			UiAlign("left top")
 			UiButtonImageBox("ui/common/box-outline-6.png", 6, 6)
 			if val then
 				UiColor(0.2, 0.65, 0.2)
-				if UiTextButton("ON", 50, 25) and IsPlayerHost() then
+				if UiTextButton("ON", 50, 24) and IsPlayerHost() then
 					self:Set(f.key, false)
 				end
 			else
 				UiColor(0.5, 0.5, 0.5)
-				if UiTextButton("OFF", 50, 25) and IsPlayerHost() then
+				if UiTextButton("OFF", 50, 24) and IsPlayerHost() then
 					self:Set(f.key, true)
 				end
 			end
@@ -1303,32 +1350,45 @@ function OptionsMenu:Draw(p)
 		end
 	end
 
-	-- Default + Close buttons
-	UiTranslate(0, 55)
-	UiAlign("left middle")
+	-- Scroll indicator
+	if needsScroll then
+		UiPush()
+		UiTranslate(INNER_W - 5, 0)
+		UiColor(1, 1, 1, 0.3)
+		local scrollBarH = visibleCount * ROW_H
+		local thumbH = scrollBarH * (visibleCount / fieldCount)
+		local thumbY = (self._scroll / (fieldCount - visibleCount)) * (scrollBarH - thumbH)
+		UiRect(3, scrollBarH)
+		UiColor(1, 1, 1, 0.6)
+		UiTranslate(0, thumbY)
+		UiRect(3, thumbH)
+		UiPop()
+	end
+
+	-- Bottom buttons
+	UiTranslate(0, visibleCount * ROW_H + 10)
 	UiButtonImageBox("ui/common/box-outline-6.png", 6, 6)
 
 	UiPush()
-	UiTranslate(60, 0)
+	UiTranslate(INNER_W / 2 - 90, 0)
 	UiColor(0.5, 0.8, 1)
-	if UiTextButton("Default", 80, 28) and IsPlayerHost() then
-		for _, f in ipairs(self.fields) do
-			self:Set(f.key, f.default)
+	if UiTextButton("Default", 80, 26) and IsPlayerHost() then
+		for _, ff in ipairs(self.fields) do
+			self:Set(ff.key, ff.default)
 		end
 	end
 	UiPop()
 
 	UiPush()
-	UiTranslate(220, 0)
+	UiTranslate(INNER_W / 2 + 10, 0)
 	UiColor(1, 0.4, 0.4)
-	if UiTextButton("Close", 80, 28) then
+	if UiTextButton("Close", 80, 26) then
 		self.open = false
 	end
 	UiPop()
 
 	UiPop()
 
-	-- ESC closes
 	if InputPressed("esc") then
 		self.open = false
 	end
