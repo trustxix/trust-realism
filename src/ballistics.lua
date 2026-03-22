@@ -503,7 +503,8 @@ function BallisticsProfile:InitSounds()
 	end
 
 	self._soundsReady = true
-	_BALLISTICS_ACTIVE_PROFILE = self
+	_BALLISTICS_PROFILES[self.toolId] = self
+	_ballisticsAutoRegisterClientHandler()
 end
 
 --- Play the fire sound at a position. Called automatically by Fire/FireFromTool.
@@ -578,10 +579,14 @@ end
 --       _ballisticsEffectHandler(effectType, x, y, z, matName)
 --   end
 -- Or use RegisterBallisticsEffectHandler() for automatic setup.
-function _ballisticsEffectHandler(effectType, x, y, z, matName)
+function _ballisticsEffectHandler(effectType, x, y, z, matName, toolId)
 	local pos = Vec(x, y, z)
-	-- Find the active profile (stored globally by InitSounds)
-	local profile = _BALLISTICS_ACTIVE_PROFILE
+	-- Look up profile by toolId, fall back to first registered profile
+	local profile = _BALLISTICS_PROFILES[toolId or ""]
+	if not profile then
+		-- Fallback: use the first registered profile
+		for _, p in pairs(_BALLISTICS_PROFILES) do profile = p; break end
+	end
 	if not profile then return end
 
 	if effectType == "muzzle" then
@@ -594,9 +599,23 @@ function _ballisticsEffectHandler(effectType, x, y, z, matName)
 	end
 end
 
---- Register the active profile for client-side effect handling.
--- Call in InitSounds() automatically.
-_BALLISTICS_ACTIVE_PROFILE = nil
+--- Registry of active profiles keyed by toolId (supports multiple weapons per mod).
+_BALLISTICS_PROFILES = {}
+
+--- Auto-register the client.ballisticsEffect handler if not already registered.
+-- Mods no longer need to manually define client.ballisticsEffect.
+-- The framework registers it once on first InitSounds() call.
+_BALLISTICS_CLIENT_HANDLER_REGISTERED = false
+
+function _ballisticsAutoRegisterClientHandler()
+	if _BALLISTICS_CLIENT_HANDLER_REGISTERED then return end
+	if client and not client.ballisticsEffect then
+		client.ballisticsEffect = function(effectType, x, y, z, matName, toolId)
+			_ballisticsEffectHandler(effectType, x, y, z, matName, toolId)
+		end
+	end
+	_BALLISTICS_CLIENT_HANDLER_REGISTERED = true
+end
 
 -- ============================================================
 -- Server context guard
@@ -882,7 +901,7 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 			self:PlayImpactSound(hitMatName, hitPos)
 		end
 		if self.impactParticles then
-			ClientCall(0, "client.ballisticsEffect", "impact", hitPos[1], hitPos[2], hitPos[3], hitMatName)
+			ClientCall(0, "client.ballisticsEffect", "impact", hitPos[1], hitPos[2], hitPos[3], hitMatName, self.toolId)
 		end
 	end
 
@@ -972,7 +991,7 @@ function BallisticsProfile:Fire(muzzlePos, baseDir, p)
 
 	-- Muzzle flash: ClientCall(0) tells all clients to spawn particles at muzzle
 	if self.muzzleFlash then
-		ClientCall(0, "client.ballisticsEffect", "muzzle", muzzlePos[1], muzzlePos[2], muzzlePos[3], "")
+		ClientCall(0, "client.ballisticsEffect", "muzzle", muzzlePos[1], muzzlePos[2], muzzlePos[3], "", self.toolId)
 	end
 
 	for i = 1, self.pellets do
@@ -1082,15 +1101,5 @@ function ToolProfile:GetCooldownRemaining(p)
 	return math.max(0, state.cooldownTimer)
 end
 
---- Initialize sounds for the tool. Call in BOTH server.init and client.init.
-function ToolProfile:InitSounds()
-	if self._soundsReady then return end
-	if self.sounds then
-		for key, path in pairs(self.sounds) do
-			if path and path ~= "" then
-				self._soundHandles[key] = LoadSound(path)
-			end
-		end
-	end
-	self._soundsReady = true
-end
+-- ToolProfile shares InitSounds with BallisticsProfile
+ToolProfile.InitSounds = BallisticsProfile.InitSounds
