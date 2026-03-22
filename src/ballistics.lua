@@ -991,3 +991,106 @@ function BallisticsProfile:FireFromTool(toolBody, muzzleOffset, p)
 	local aimHit, aimStart, aimEnd, aimDir = GetPlayerAimInfo(muzzlePos, self.range, p)
 	self:Fire(muzzlePos, aimDir, p)
 end
+
+-- ============================================================
+-- Non-weapon tool profiles
+-- ============================================================
+-- Extend the framework to non-weapon tools: hooks, beams, launchers, utilities.
+-- Each type has configurable properties and shared cooldown/state management.
+-- All state is server-authoritative via shared.toolState[player].
+
+ToolProfile = {}
+
+function CreateToolProfile(cfg)
+	local profile = {
+		type         = cfg.type or "utility",     -- "hook", "beam", "launcher", "utility"
+		range        = cfg.range or 50,
+		cooldown     = cfg.cooldown or 0,         -- seconds between uses
+		toolId       = cfg.toolId or "unknown",
+
+		-- Hook-specific
+		travelSpeed  = cfg.travelSpeed or 100,    -- hook projectile speed
+		pullForce    = cfg.pullForce or 120,       -- pull strength
+		attachTo     = cfg.attachTo or "both",     -- "static", "dynamic", "both"
+
+		-- Beam-specific
+		damagePerSecond = cfg.damagePerSecond or 0, -- continuous damage (0 = non-damaging beam)
+		effectColor  = cfg.effectColor or {1, 1, 1}, -- beam color
+		beamWidth    = cfg.beamWidth or 0.05,
+
+		-- Launcher-specific
+		projectileSpeed = cfg.projectileSpeed or 50,
+		gravity      = cfg.gravity or 10,
+		fuseTime     = cfg.fuseTime or 3.0,
+		blastRadius  = cfg.blastRadius or 5,
+		blastDamage  = cfg.blastDamage or 1.0,
+
+		-- Sound
+		sounds       = cfg.sounds or nil,
+		soundVolume  = cfg.soundVolume or 0.5,
+		_soundHandles = {},
+		_soundsReady = false,
+	}
+	setmetatable(profile, { __index = ToolProfile })
+	return profile
+end
+
+--- Initialize tool state for a player. Call in server.tick PlayersAdded.
+function ToolProfile:InitState(p)
+	shared.toolState = shared.toolState or {}
+	shared.toolState[p] = shared.toolState[p] or {}
+	shared.toolState[p][self.toolId] = {
+		cooldownTimer = 0,
+		active = false,
+	}
+end
+
+--- Clean up tool state for a player. Call in server.tick PlayersRemoved.
+function ToolProfile:CleanupState(p)
+	if shared.toolState and shared.toolState[p] then
+		shared.toolState[p][self.toolId] = nil
+	end
+end
+
+--- Check if the tool is ready (off cooldown). Works on both server and client (reads shared).
+function ToolProfile:IsReady(p)
+	local state = shared.toolState and shared.toolState[p] and shared.toolState[p][self.toolId]
+	if not state then return true end
+	return state.cooldownTimer <= 0 and not state.active
+end
+
+--- Start the cooldown timer. SERVER only.
+function ToolProfile:StartCooldown(p)
+	local state = shared.toolState and shared.toolState[p] and shared.toolState[p][self.toolId]
+	if state then
+		state.cooldownTimer = self.cooldown
+	end
+end
+
+--- Tick the cooldown timer. Call in server.tickPlayer. SERVER only.
+function ToolProfile:TickCooldown(p, dt)
+	local state = shared.toolState and shared.toolState[p] and shared.toolState[p][self.toolId]
+	if state and state.cooldownTimer > 0 then
+		state.cooldownTimer = state.cooldownTimer - dt
+	end
+end
+
+--- Get remaining cooldown for HUD. Works on client (reads shared).
+function ToolProfile:GetCooldownRemaining(p)
+	local state = shared.toolState and shared.toolState[p] and shared.toolState[p][self.toolId]
+	if not state then return 0 end
+	return math.max(0, state.cooldownTimer)
+end
+
+--- Initialize sounds for the tool. Call in BOTH server.init and client.init.
+function ToolProfile:InitSounds()
+	if self._soundsReady then return end
+	if self.sounds then
+		for key, path in pairs(self.sounds) do
+			if path and path ~= "" then
+				self._soundHandles[key] = LoadSound(path)
+			end
+		end
+	end
+	self._soundsReady = true
+end
