@@ -94,6 +94,60 @@ function ApplyBarrelPreset(cfg, presetName)
 end
 
 -- ============================================================
+-- Ammo subtype registry
+-- ============================================================
+-- Ammo subtypes are variants of a caliber with different properties.
+-- The caliber is the base, the ammo type modifies specific fields.
+--
+-- Usage:
+--   RegisterAmmoType("12gauge", "slug", { pellets = 1, damage = 80, spread = 0.01, penScale = 2.0 })
+--   local gun = CreateBallisticsProfile({ caliber = "12gauge", ammoType = "slug", toolId = "my-gun" })
+--
+-- Runtime switching (for weapons that support multiple ammo types):
+--   profile:SetAmmoType("slug")  -- re-applies caliber base + new ammo overrides
+
+AMMO_TYPE_REGISTRY = {}
+
+function RegisterAmmoType(caliber, name, overrides)
+	if not AMMO_TYPE_REGISTRY[caliber] then
+		AMMO_TYPE_REGISTRY[caliber] = {}
+	end
+	AMMO_TYPE_REGISTRY[caliber][name] = overrides
+end
+
+function GetAmmoType(caliber, name)
+	return AMMO_TYPE_REGISTRY[caliber] and AMMO_TYPE_REGISTRY[caliber][name]
+end
+
+-- Built-in 12gauge ammo subtypes
+RegisterAmmoType("12gauge", "buckshot", {})  -- default, no overrides needed
+
+RegisterAmmoType("12gauge", "slug", {
+	pellets = 1, damage = 80, spread = 0.01,
+	penScale = 2.0, pushScale = 0.6,
+	maxPenetrations = 3, penRetain = 0.55,
+	damageVariance = 0.03,
+	holeScale = 1.5,
+	muzzleFlashSize = 0.7, muzzleSmokeSize = 3.0,
+})
+
+RegisterAmmoType("12gauge", "birdshot", {
+	pellets = 40, damage = 5, spread = 0.12,
+	range = 25, fullRange = 4, halfRange = 12, minFalloff = 0.05,
+	penScale = 0, pushScale = 0.05,
+	maxPenetrations = 1, maxRicochets = 0,
+	damageVariance = 0.2,
+	holeScale = 0.3,
+})
+
+RegisterAmmoType("12gauge", "ap", {
+	pellets = 8, damage = 35, spread = 0.05,
+	penScale = 2.5, pushScale = 0.1,
+	maxPenetrations = 3, penRetain = 0.5,
+	materials = { metal = { 0.7, 15 }, heavymetal = { 0.5, 8 }, hardmetal = { 0.3, 4 } },
+})
+
+-- ============================================================
 -- Caliber registry -- define ammo types once, reuse everywhere
 -- ============================================================
 -- A caliber defines the ballistic properties of ammunition.
@@ -266,13 +320,24 @@ BallisticsProfile = {}
 
 function CreateBallisticsProfile(cfg)
 	-- If a caliber is specified, use it as the base and overlay cfg on top
-	if cfg.caliber then
-		local base = CALIBER_REGISTRY[cfg.caliber]
+	local caliberName = cfg.caliber
+	if caliberName then
+		local base = CALIBER_REGISTRY[caliberName]
 		if base then
 			local merged = {}
 			for k, v in pairs(base) do merged[k] = v end
+			-- Apply ammo subtype overrides (between caliber base and per-weapon overrides)
+			if cfg.ammoType and cfg.ammoType ~= "" then
+				local ammoOverrides = GetAmmoType(caliberName, cfg.ammoType)
+				if ammoOverrides then
+					for k, v in pairs(ammoOverrides) do merged[k] = v end
+				end
+			end
+			-- Per-weapon overrides take final priority
 			for k, v in pairs(cfg) do merged[k] = v end
-			merged.caliber = nil  -- don't store the lookup key
+			merged.caliber = nil
+			merged.ammoType = cfg.ammoType  -- preserve for runtime switching
+			merged._caliberName = caliberName -- preserve for runtime switching
 			cfg = merged
 		end
 	end
@@ -564,6 +629,28 @@ end
 -- ============================================================
 -- Ballistics math
 -- ============================================================
+
+--- Switch ammo type at runtime. Rebuilds the profile from caliber base + new ammo overrides.
+-- Call on SERVER only. Preserves per-weapon overrides and sound handles.
+function BallisticsProfile:SetAmmoType(ammoName)
+	local caliberName = self._caliberName
+	if not caliberName then return end
+
+	local base = CALIBER_REGISTRY[caliberName]
+	if not base then return end
+
+	-- Rebuild: caliber base -> ammo overrides -> keep identity/sounds
+	local ammoOverrides = GetAmmoType(caliberName, ammoName) or {}
+	local keepFields = { toolId = self.toolId, sounds = self.sounds, impactSounds = self.impactSounds,
+		_soundHandles = self._soundHandles, _impactHandles = self._impactHandles,
+		_soundsReady = self._soundsReady, _caliberName = caliberName,
+		barrelLength = self.barrelLength, choke = self.choke }
+
+	for k, v in pairs(base) do self[k] = v end
+	for k, v in pairs(ammoOverrides) do self[k] = v end
+	for k, v in pairs(keepFields) do self[k] = v end
+	self.ammoType = ammoName
+end
 
 --- Get damage multiplier for hitting a specific material at a given distance.
 -- Each material has its own effective range -- beyond that range, damage drops
