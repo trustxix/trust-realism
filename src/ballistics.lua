@@ -416,6 +416,9 @@ function CreateBallisticsProfile(cfg)
 		-- Per-pellet variance (0 = uniform, 0.15 = +/-15% randomized damage)
 		damageVariance = cfg.damageVariance or 0,
 
+		-- Ammo system (nil = infinite ammo, table = magazine system)
+		ammo         = cfg.ammo or nil,
+
 		-- Ricochet
 		ricochetAngle   = cfg.ricochetAngle or 45,    -- max incidence angle in degrees for ricochet (0=never, 90=always)
 		ricochetRetain  = cfg.ricochetRetain or 0.3,   -- energy retained after bounce (exponential per bounce)
