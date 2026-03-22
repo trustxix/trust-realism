@@ -2,6 +2,7 @@
 -- https://github.com/trustxix/trust-realism
 -- Include in weapon mods: #include "lib/ballistics.lua"
 -- @lint-ok-file HANDLE-GT-ZERO
+-- @lint-ok-file MISSING-VERSION2
 --
 -- Features:
 --   - Configurable per-weapon damage profiles
@@ -330,6 +331,18 @@ function CreateBallisticsProfile(cfg)
 		_impactHandles = {},                      -- loaded impact handles
 		_soundsReady = false,                     -- true after InitSounds() called
 
+		-- Visual effects
+		muzzleFlash  = cfg.muzzleFlash ~= false,  -- enable muzzle flash (default true)
+		muzzleFlashSize = cfg.muzzleFlashSize or 0.5, -- fire particle size
+		muzzleSmokeSize = cfg.muzzleSmokeSize or 2.5, -- smoke particle size
+		muzzleLightIntensity = cfg.muzzleLightIntensity or 0.5, -- PointLight intensity at muzzle
+		muzzleLightDuration = cfg.muzzleLightDuration or 0.05,  -- how long muzzle light lasts (seconds)
+		impactParticles = cfg.impactParticles ~= false, -- enable impact particles (default true)
+		impactParticleSize = cfg.impactParticleSize or 0.3, -- impact smoke size
+
+		-- Per-material impact effects (what spawns when a pellet hits)
+		materialEffects = cfg.materialEffects or nil, -- { metal = "spark", wood = "splinter", ... }
+
 		-- Identity
 		toolId       = cfg.toolId or "unknown",  -- kill feed attribution
 	}
@@ -377,6 +390,7 @@ function BallisticsProfile:InitSounds()
 	end
 
 	self._soundsReady = true
+	_BALLISTICS_ACTIVE_PROFILE = self
 end
 
 --- Play the fire sound at a position. Called automatically by Fire/FireFromTool.
@@ -396,6 +410,80 @@ function BallisticsProfile:PlayImpactSound(matName, hitPos)
 		PlaySound(handle, hitPos, self.soundVolume * 0.5)
 	end
 end
+
+-- ============================================================
+-- Visual effects system
+-- ============================================================
+-- Effects are client-only (SpawnParticle, PointLight). The server triggers them
+-- via ClientCall(0, ...) so all clients see the same effects at the same positions.
+-- This follows base game MP pattern: ClientCall(0) for world-visible events.
+
+-- Default material -> particle type mapping
+DEFAULT_MATERIAL_EFFECTS = {
+	metal       = { particle = "smoke",     size = 0.15, color = {1, 0.8, 0.3} },  -- sparky
+	heavymetal  = { particle = "smoke",     size = 0.15, color = {1, 0.8, 0.3} },
+	hardmetal   = { particle = "smoke",     size = 0.1,  color = {1, 0.7, 0.2} },
+	wood        = { particle = "smoke",     size = 0.2,  color = {0.8, 0.7, 0.5} }, -- dusty
+	glass       = { particle = "smoke",     size = 0.25, color = {1, 1, 1} },        -- white dust
+	masonry     = { particle = "smoke",     size = 0.3,  color = {0.7, 0.65, 0.6} }, -- brick dust
+	rock        = { particle = "smoke",     size = 0.25, color = {0.6, 0.6, 0.6} },  -- grey dust
+	hardmasonry = { particle = "smoke",     size = 0.25, color = {0.65, 0.6, 0.55} },
+	plaster     = { particle = "smoke",     size = 0.35, color = {0.9, 0.9, 0.85} }, -- white cloud
+	dirt        = { particle = "smoke",     size = 0.3,  color = {0.5, 0.4, 0.3} },  -- brown dust
+	foliage     = { particle = "smoke",     size = 0.15, color = {0.4, 0.6, 0.3} },  -- green bits
+	plastic     = { particle = "smoke",     size = 0.15, color = {0.8, 0.8, 0.8} },
+}
+
+--- Spawn muzzle flash effect. Called by Fire() via ClientCall(0).
+-- CLIENT-SIDE ONLY -- this function is called by the client handler.
+function BallisticsProfile:SpawnMuzzleFlash(pos)
+	if not self.muzzleFlash then return end
+	SpawnParticle("fire", pos, Vec(0, 1.0 + math.random() * 0.5, 0), self.muzzleFlashSize, 0.15)
+	SpawnParticle("darksmoke", pos, Vec(0, 0.8 + math.random() * 0.3, 0), self.muzzleSmokeSize * 0.3, 2.0)
+end
+
+--- Spawn impact effect for a material at a position.
+-- CLIENT-SIDE ONLY -- called by the client handler.
+function BallisticsProfile:SpawnImpactEffect(matName, hitPos)
+	if not self.impactParticles then return end
+
+	-- Check for custom material effects first, then defaults
+	local fx = (self.materialEffects and self.materialEffects[matName])
+		or DEFAULT_MATERIAL_EFFECTS[matName]
+
+	if fx then
+		local vel = Vec(0, 0.5 + math.random() * 0.5, 0)
+		SpawnParticle(fx.particle, hitPos, vel, fx.size * self.impactParticleSize / 0.3, 1.0)
+	else
+		-- Fallback: generic smoke puff
+		SpawnParticle("smoke", hitPos, Vec(0, 0.5, 0), self.impactParticleSize, 1.0)
+	end
+end
+
+--- Client-side handler for ballistics effects. Mod must register this:
+--   function client.ballisticsEffect(effectType, x, y, z, matName)
+--       _ballisticsEffectHandler(effectType, x, y, z, matName)
+--   end
+-- Or use RegisterBallisticsEffectHandler() for automatic setup.
+function _ballisticsEffectHandler(effectType, x, y, z, matName)
+	local pos = Vec(x, y, z)
+	-- Find the active profile (stored globally by InitSounds)
+	local profile = _BALLISTICS_ACTIVE_PROFILE
+	if not profile then return end
+
+	if effectType == "muzzle" then
+		profile:SpawnMuzzleFlash(pos)
+		if profile.muzzleLightIntensity > 0 then
+			PointLight(pos, 1, 0.8, 0.5, profile.muzzleLightIntensity)
+		end
+	elseif effectType == "impact" then
+		profile:SpawnImpactEffect(matName or "", pos)
+	end
+end
+
+--- Register the active profile for client-side effect handling.
+-- Call in InitSounds() automatically.
+_BALLISTICS_ACTIVE_PROFILE = nil
 
 -- ============================================================
 -- Server context guard
@@ -550,10 +638,15 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 	-- Shoot() with holeScale controls visible crater size
 	Shoot(muzzlePos, dir, self.bulletType, finalDamage * self.holeScale, self.range, p, self.toolId)
 
-	-- Impact sound (only on initial hits and first pass-through, not every recursion)
-	if hit and depth <= 1 and self._soundsReady and hitMatName ~= "" then
+	-- Impact sound + particles (only on initial hits and first pass-through, not every recursion)
+	if hit and depth <= 1 and hitMatName ~= "" then
 		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
-		self:PlayImpactSound(hitMatName, hitPos)
+		if self._soundsReady then
+			self:PlayImpactSound(hitMatName, hitPos)
+		end
+		if self.impactParticles then
+			ClientCall(0, "client.ballisticsEffect", "impact", hitPos[1], hitPos[2], hitPos[3], hitMatName)
+		end
 	end
 
 	-- Physics push correction
@@ -638,6 +731,11 @@ function BallisticsProfile:Fire(muzzlePos, baseDir, p)
 	-- Fire sound: once per shot, PlaySound on server auto-syncs to all clients
 	if self._soundsReady then
 		self:PlayFireSound(muzzlePos)
+	end
+
+	-- Muzzle flash: ClientCall(0) tells all clients to spawn particles at muzzle
+	if self.muzzleFlash then
+		ClientCall(0, "client.ballisticsEffect", "muzzle", muzzlePos[1], muzzlePos[2], muzzlePos[3], "")
 	end
 
 	for i = 1, self.pellets do
