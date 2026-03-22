@@ -237,6 +237,8 @@ RegisterCaliber("melee", {
 -- Profile creation
 -- ============================================================
 
+BallisticsProfile = {}
+
 function CreateBallisticsProfile(cfg)
 	-- If a caliber is specified, use it as the base and overlay cfg on top
 	if cfg.caliber then
@@ -431,8 +433,6 @@ end
 -- ============================================================
 -- Ballistics math
 -- ============================================================
-
-BallisticsProfile = {}
 
 --- Get damage multiplier for hitting a specific material at a given distance.
 -- Each material has its own effective range -- beyond that range, damage drops
