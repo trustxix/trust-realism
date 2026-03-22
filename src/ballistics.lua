@@ -1,4 +1,4 @@
--- Trust Realism — Ballistics Framework for Teardown v2 Multiplayer
+-- Trust Realism -- Ballistics Framework for Teardown v2 Multiplayer
 -- https://github.com/trustxix/trust-realism
 -- Include in weapon mods: #include "lib/ballistics.lua"
 -- @lint-ok-file HANDLE-GT-ZERO
@@ -8,7 +8,7 @@
 --   - Exponential distance falloff with full-power close range zone
 --   - Decoupled hole size vs penetration depth (Shoot + MakeHole)
 --   - Material resistance (pellets less effective vs metal, more vs wood)
---   - Uniform disk spread (sqrt distribution — no center stacking)
+--   - Uniform disk spread (sqrt distribution -- no center stacking)
 --   - GetPlayerAimInfo-based aiming (shoots where crosshair points)
 --   - 100% server-side, MP-safe (Shoot auto-syncs)
 --
@@ -32,9 +32,9 @@
 -- Each material has:
 --   mult  = base damage multiplier (1.0 = normal, <1 = resistant, >1 = fragile)
 --   range = effective range in meters (full damage within this distance,
---           rapid falloff beyond — must be this close to penetrate)
+--           rapid falloff beyond -- must be this close to penetrate)
 --
--- Example: metal has mult=0.3 and range=3 — even at point blank you only
+-- Example: metal has mult=0.3 and range=3 -- even at point blank you only
 -- do 30% damage, and beyond 3m you can barely scratch it.
 
 DEFAULT_MATERIAL_PROPERTIES = {
@@ -69,11 +69,11 @@ DEFAULT_RICOCHET_MATERIALS = {
 }
 
 -- ============================================================
--- Caliber registry — define ammo types once, reuse everywhere
+-- Caliber registry -- define ammo types once, reuse everywhere
 -- ============================================================
 -- A caliber defines the ballistic properties of ammunition.
 -- Weapons reference a caliber by name and inherit all its properties.
--- Per-weapon overrides still work — they take priority over the caliber.
+-- Per-weapon overrides still work -- they take priority over the caliber.
 --
 -- Usage:
 --   RegisterCaliber("12gauge", { damage = 28, pellets = 12, spread = 0.07, ... })
@@ -155,7 +155,7 @@ RegisterCaliber("5.56nato", {
 	holeScale   = 1.0,
 	penScale    = 0.5,
 	maxPenetrations = 3,  -- high velocity, passes through multiple thin surfaces
-	penRetain   = 0.45,   -- 45% retained — tumbles but keeps going
+	penRetain   = 0.45,   -- 45% retained -- tumbles but keeps going
 	damageVariance = 0.05, -- +/-5% (military spec, tight tolerance)
 	maxRicochets = 2,     -- two bounces (high velocity, maintains trajectory)
 	ricochetRetain = 0.35,
@@ -180,7 +180,7 @@ RegisterCaliber("7.62nato", {
 	holeScale   = 1.0,
 	penScale    = 1.0,
 	maxPenetrations = 3,  -- heavy round, punches through walls
-	penRetain   = 0.5,    -- 50% retained — keeps most energy
+	penRetain   = 0.5,    -- 50% retained -- keeps most energy
 	damageVariance = 0.05, -- +/-5% (military spec)
 	maxRicochets = 2,
 	ricochetRetain = 0.4,  -- heavy round keeps more energy on bounce
@@ -205,7 +205,7 @@ RegisterCaliber("50bmg", {
 	holeScale   = 1.2,
 	penScale    = 2.5,
 	maxPenetrations = 4,  -- anti-material, goes through almost anything
-	penRetain   = 0.6,    -- 60% retained — massive energy reserve
+	penRetain   = 0.6,    -- 60% retained -- massive energy reserve
 	damageVariance = 0.03, -- +/-3% (match-grade precision)
 	maxRicochets = 2,
 	ricochetRetain = 0.45, -- massive round, lots of energy on bounce
@@ -340,7 +340,7 @@ end
 -- ============================================================
 
 -- Default impact sound paths per material (mods override with their own paths)
--- Set to empty table by default — mods provide their own sound files via impactSounds config.
+-- Set to empty table by default -- mods provide their own sound files via impactSounds config.
 -- The framework only loads sounds that the mod explicitly provides.
 DEFAULT_IMPACT_SOUNDS = {}
 
@@ -435,7 +435,7 @@ end
 BallisticsProfile = {}
 
 --- Get damage multiplier for hitting a specific material at a given distance.
--- Each material has its own effective range — beyond that range, damage drops
+-- Each material has its own effective range -- beyond that range, damage drops
 -- rapidly even if the base multiplier would normally allow some damage.
 -- This models real physics: shotgun pellets can dent metal at point blank
 -- but bounce off at 10m.
@@ -584,7 +584,7 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 		-- Check ricochet conditions
 		local didRicochet = false
 		if self.maxRicochets > 0 and (_ricochetCount or 0) < self.maxRicochets and normal then
-			-- Incidence angle: 0° = head-on (no ricochet), 90° = parallel (perfect ricochet)
+			-- Incidence angle: 0 deg = head-on (no ricochet), 90 deg = parallel (perfect ricochet)
 			local cosAngle = math.abs(VecDot(dir, normal))
 			local incidenceAngle = 90 - math.deg(math.acos(math.min(cosAngle, 1.0)))
 
