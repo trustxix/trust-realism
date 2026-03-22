@@ -70,6 +70,30 @@ DEFAULT_RICOCHET_MATERIALS = {
 }
 
 -- ============================================================
+-- Barrel presets (convenience -- use with barrelLength/choke)
+-- ============================================================
+BARREL_PRESETS = {
+	sawed_off   = { length = 0.25, choke = 0 },    -- widest spread, shortest range
+	tactical    = { length = 0.45, choke = 0.3 },   -- moderate spread, medium range
+	standard    = { length = 0.5,  choke = 0.5 },   -- balanced
+	hunting     = { length = 0.7,  choke = 0.8 },   -- tight pattern, long range
+	competition = { length = 0.75, choke = 1.0 },   -- tightest pattern, longest range
+	rifle       = { length = 0.6,  choke = 0.9 },   -- rifle barrel (nearly no spread)
+	pistol      = { length = 0.12, choke = 0 },     -- short, no choke
+	smg         = { length = 0.25, choke = 0.2 },   -- compact, slight choke
+}
+
+--- Helper: apply a barrel preset to a config table
+function ApplyBarrelPreset(cfg, presetName)
+	local preset = BARREL_PRESETS[presetName]
+	if preset then
+		cfg.barrelLength = preset.length
+		cfg.choke = preset.choke
+	end
+	return cfg
+end
+
+-- ============================================================
 -- Caliber registry -- define ammo types once, reuse everywhere
 -- ============================================================
 -- A caliber defines the ballistic properties of ammunition.
@@ -298,6 +322,12 @@ function CreateBallisticsProfile(cfg)
 		-- Spread (0 = laser, 0.07 = shotgun, 0.15 = wide scatter)
 		spread       = cfg.spread or 0,
 
+		-- Barrel & choke (optional -- if set, overrides spread/range/fullRange)
+		-- barrelLength in meters: 0.25 = sawed-off, 0.5 = tactical, 0.7 = hunting
+		-- choke 0-1: 0 = cylinder (no choke, wide), 1 = full choke (tight pattern)
+		barrelLength = cfg.barrelLength or nil,
+		choke        = cfg.choke or nil,
+
 		-- Hole size vs penetration (decoupled)
 		holeScale    = cfg.holeScale or 1.0,     -- Shoot() damage multiplier (controls crater size)
 		penScale     = cfg.penScale or 0,        -- extra MakeHole hard penetration (0 = no extra, >0 = punch deeper)
@@ -346,6 +376,19 @@ function CreateBallisticsProfile(cfg)
 		-- Identity
 		toolId       = cfg.toolId or "unknown",  -- kill feed attribution
 	}
+	-- Barrel & choke derivation: physical properties override manual spread/range
+	if profile.barrelLength and profile.choke then
+		local bl = profile.barrelLength
+		local ch = profile.choke
+		-- Longer barrel = tighter spread, more range, more full-power zone
+		-- More choke = tighter spread, slightly more full-power zone
+		-- Base spread of 0.12 is a cylinder-bore sawed-off (worst case)
+		profile.spread = 0.12 * (1.0 - ch * 0.7) / (bl * 2.0)
+		profile.range = profile.range * bl * 1.5
+		profile.fullRange = profile.fullRange * (1.0 + ch * 0.5) * (bl / 0.5)
+		profile.halfRange = profile.halfRange * (1.0 + ch * 0.3) * (bl / 0.5)
+	end
+
 	setmetatable(profile, { __index = BallisticsProfile })
 	return profile
 end
