@@ -396,6 +396,39 @@ function BallisticsProfile:PlayImpactSound(matName, hitPos)
 end
 
 -- ============================================================
+-- Server context guard
+-- ============================================================
+-- All firing functions MUST run on the server. If called from client context,
+-- the damage won't sync and you get desync. This guard catches the mistake
+-- at runtime with a clear error instead of silent breakage.
+--
+-- Detection: try calling a server-only function (SetToolAmmo with dummy args).
+-- On client, it silently fails or errors. We use a simpler approach: track
+-- which context we're in via a flag set by the mod's server/client callbacks.
+
+_BALLISTICS_SERVER_CONTEXT = false
+
+--- Call at the start of server.tick to enable firing functions.
+function BallisticsServerTick()
+	_BALLISTICS_SERVER_CONTEXT = true
+end
+
+--- Call at the start of client.tick to disable firing functions.
+function BallisticsClientTick()
+	_BALLISTICS_SERVER_CONTEXT = false
+end
+
+local function assertServer(funcName)
+	if not _BALLISTICS_SERVER_CONTEXT then
+		DebugPrint("[Trust Realism] ERROR: " .. funcName .. "() called outside server context! "
+			.. "All firing must happen in server.tickPlayer. This WILL cause desync. "
+			.. "Add BallisticsServerTick() to server.tick and BallisticsClientTick() to client.tick.")
+		return true
+	end
+	return false
+end
+
+-- ============================================================
 -- Ballistics math
 -- ============================================================
 
@@ -477,6 +510,7 @@ end
 --- @param _totalDist number|nil Internal: total distance traveled from original muzzle (for falloff)
 --- @param _ricochetCount number|nil Internal: number of ricochets so far
 function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _totalDist, _ricochetCount)
+	if assertServer("FireProjectile") then return end
 	local depth = _depth or 0
 	local totalDist = _totalDist or 0
 	local baseDamage = self.damage / 100
@@ -600,6 +634,7 @@ end
 --- Fire all pellets in a spread pattern from a position + direction.
 -- Plays fire sound once (not per pellet). Call on SERVER only.
 function BallisticsProfile:Fire(muzzlePos, baseDir, p)
+	if assertServer("Fire") then return end
 	-- Fire sound: once per shot, PlaySound on server auto-syncs to all clients
 	if self._soundsReady then
 		self:PlayFireSound(muzzlePos)
@@ -615,6 +650,7 @@ end
 -- Provide the tool body handle and muzzle offset vector.
 -- Call on SERVER only.
 function BallisticsProfile:FireFromTool(toolBody, muzzleOffset, p)
+	if assertServer("FireFromTool") then return end
 	local toolTrans = GetBodyTransform(toolBody)
 	local muzzlePos = TransformToParentPoint(toolTrans, muzzleOffset)
 	local aimHit, aimStart, aimEnd, aimDir = GetPlayerAimInfo(muzzlePos, self.range, p)
