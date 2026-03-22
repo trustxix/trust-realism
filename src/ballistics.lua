@@ -1007,6 +1007,23 @@ function BallisticsProfile:FireFromTool(toolBody, muzzleOffset, p)
 	if assertServer("FireFromTool") then return end
 	local toolTrans = GetBodyTransform(toolBody)
 	local muzzlePos = TransformToParentPoint(toolTrans, muzzleOffset)
+	local eyePos = GetPlayerEyeTransform(p).pos
+
+	-- Muzzle obstruction check: if the muzzle is inside or behind geometry,
+	-- fire from the eye position instead. This prevents shots going through
+	-- walls when the barrel clips into a surface.
+	local toMuzzle = VecSub(muzzlePos, eyePos)
+	local muzzleDist = VecLength(toMuzzle)
+	if muzzleDist > 0.01 then
+		local muzzleDir = VecNormalize(toMuzzle)
+		local hit, dist = QueryRaycast(eyePos, muzzleDir, muzzleDist)
+		if hit then
+			-- Something between eye and muzzle -- muzzle is clipping
+			-- Fall back to eye position for the shot origin
+			muzzlePos = eyePos
+		end
+	end
+
 	local aimHit, aimStart, aimEnd, aimDir = GetPlayerAimInfo(muzzlePos, self.range, p)
 	self:Fire(muzzlePos, aimDir, p)
 end
