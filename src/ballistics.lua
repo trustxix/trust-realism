@@ -26,28 +26,32 @@
 --   shotgun:FireFromTool(toolBody, muzzleOffset, p)
 
 -- ============================================================
--- Default material resistance table
+-- Default material properties table
 -- ============================================================
--- Multiplier on damage/penetration when hitting this material.
--- < 1.0 = less effective (pellets bounce off / barely scratch)
--- = 1.0 = normal effectiveness
--- > 1.0 = more effective (pellets tear through easily)
+-- Each material has:
+--   mult  = base damage multiplier (1.0 = normal, <1 = resistant, >1 = fragile)
+--   range = effective range in meters (full damage within this distance,
+--           rapid falloff beyond — must be this close to penetrate)
+--
+-- Example: metal has mult=0.3 and range=3 — even at point blank you only
+-- do 30% damage, and beyond 3m you can barely scratch it.
 
-DEFAULT_MATERIAL_RESISTANCE = {
-	glass        = 1.5,   -- shatters easily
-	foliage      = 1.8,   -- leaves and branches, no resistance
-	plaster      = 1.3,   -- drywall, crumbles
-	dirt          = 1.2,   -- soft ground
-	plastic      = 1.1,   -- thin plastic
-	wood         = 1.0,   -- baseline material
-	ice          = 0.9,   -- slightly harder than wood
-	masonry      = 0.6,   -- brick, significant resistance
-	rock         = 0.5,   -- stone, hard to penetrate
-	hardmasonry  = 0.35,  -- reinforced concrete
-	metal        = 0.25,  -- steel plate, very resistant
-	heavymetal   = 0.15,  -- thick steel, barely scratched
-	hardmetal    = 0.1,   -- hardened steel, almost impervious
-	unphysical   = 1.0,   -- default for non-physical
+DEFAULT_MATERIAL_PROPERTIES = {
+	--               mult   range   notes
+	glass        = { 1.5,   40 },  -- shatters from far away
+	foliage      = { 1.8,   45 },  -- no resistance at any distance
+	plaster      = { 1.3,   30 },  -- drywall, crumbles easily
+	dirt         = { 1.2,   30 },  -- soft ground
+	plastic      = { 1.1,   25 },  -- thin plastic
+	wood         = { 1.0,   20 },  -- baseline: splinters but holds, effective at medium range
+	ice          = { 0.9,   18 },  -- slightly harder than wood
+	masonry      = { 0.6,   10 },  -- brick: need to be fairly close
+	rock         = { 0.5,    8 },  -- stone: close range only
+	hardmasonry  = { 0.35,   6 },  -- reinforced concrete: very close
+	metal        = { 0.3,    3 },  -- steel plate: point blank only
+	heavymetal   = { 0.15,   2 },  -- thick steel: literally touching it
+	hardmetal    = { 0.1,    1 },  -- hardened steel: almost impervious
+	unphysical   = { 1.0,   50 },  -- non-physical, no resistance
 }
 
 -- ============================================================
@@ -56,13 +60,22 @@ DEFAULT_MATERIAL_RESISTANCE = {
 
 function CreateBallisticsProfile(cfg)
 	-- Merge custom material overrides with defaults
+	-- Supports both formats:
+	--   materials = { metal = { 0.5, 5 } }       -- new: {mult, range}
+	--   materials = { metal = 0.5 }               -- legacy: just mult (uses default range)
 	local materials = {}
-	for k, v in pairs(DEFAULT_MATERIAL_RESISTANCE) do
-		materials[k] = v
+	for k, v in pairs(DEFAULT_MATERIAL_PROPERTIES) do
+		materials[k] = { v[1], v[2] }
 	end
 	if cfg.materials then
 		for k, v in pairs(cfg.materials) do
-			materials[k] = v
+			if type(v) == "table" then
+				materials[k] = { v[1], v[2] }
+			else
+				-- Legacy: just a multiplier, keep default range for this material
+				local defRange = (materials[k] and materials[k][2]) or 20
+				materials[k] = { v, defRange }
+			end
 		end
 	end
 
@@ -102,13 +115,32 @@ end
 
 BallisticsProfile = {}
 
---- Get damage multiplier for hitting a specific material.
--- Returns a value from the materials table, or 1.0 if unknown.
-function BallisticsProfile:GetMaterialMultiplier(shape, hitPos)
+--- Get damage multiplier for hitting a specific material at a given distance.
+-- Each material has its own effective range — beyond that range, damage drops
+-- rapidly even if the base multiplier would normally allow some damage.
+-- This models real physics: shotgun pellets can dent metal at point blank
+-- but bounce off at 10m.
+function BallisticsProfile:GetMaterialMultiplier(shape, hitPos, dist)
 	if not self.useMaterials or shape == 0 then return 1.0 end
 	local ok, mat = pcall(GetShapeMaterialAtPosition, shape, hitPos)
 	if not ok or not mat or mat == "" then return 1.0 end
-	return self.materials[mat] or 1.0
+
+	local props = self.materials[mat]
+	if not props then return 1.0 end
+
+	local mult = props[1]       -- base effectiveness
+	local matRange = props[2]   -- effective range for this material
+
+	-- Within material's effective range: full base multiplier
+	if dist <= matRange then
+		return mult
+	end
+
+	-- Beyond effective range: rapid exponential decay
+	-- Drops to 10% of base mult at 2x the material's range
+	local overDist = dist - matRange
+	local matDecay = math.pow(0.1, overDist / matRange)
+	return mult * matDecay
 end
 
 --- Calculate damage falloff multiplier for a given distance.
@@ -158,10 +190,10 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 	local falloff = hit and self:GetFalloff(dist) or 1.0
 	local finalDamage = damage * falloff
 
-	-- Material resistance: reduce damage against hard materials
+	-- Material resistance: reduce damage based on what was hit AND how far away
 	if hit and shape and shape ~= 0 then
 		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
-		local matMult = self:GetMaterialMultiplier(shape, hitPos)
+		local matMult = self:GetMaterialMultiplier(shape, hitPos, dist)
 		finalDamage = finalDamage * matMult
 	end
 
