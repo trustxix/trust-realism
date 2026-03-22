@@ -93,6 +93,7 @@ RegisterCaliber("12gauge", {
 	minFalloff  = 0.15,
 	holeScale   = 0.5,
 	penScale    = 1.0,
+	pushScale   = 0.15,   -- shotgun pellets nudge objects, don't launch them
 	materials   = {
 		glass     = { 1.8,  40 },
 		wood      = { 1.2,  18 },
@@ -246,6 +247,9 @@ function CreateBallisticsProfile(cfg)
 		materials    = materials,                 -- material name -> damage multiplier
 		useMaterials = cfg.useMaterials ~= false, -- enabled by default, set false to disable
 
+		-- Physics push (0 = no push, 0.3 = gentle, 1.0 = full Shoot() default)
+		pushScale    = cfg.pushScale or 1.0,     -- how much objects get pushed by impacts
+
 		-- Identity
 		toolId       = cfg.toolId or "unknown",  -- kill feed attribution
 	}
@@ -324,8 +328,8 @@ end
 -- Firing
 -- ============================================================
 
---- Fire a single projectile with falloff, material resistance, and decoupled penetration.
--- Call on SERVER only. Shoot() auto-syncs to all clients.
+--- Fire a single projectile with falloff, material resistance, decoupled penetration,
+--- and controlled physics push. Call on SERVER only. Shoot() auto-syncs to all clients.
 function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 	local damage = self.damage / 100
 
@@ -335,14 +339,31 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 	local finalDamage = damage * falloff
 
 	-- Material resistance: reduce damage based on what was hit AND how far away
+	local hitBody = 0
 	if hit and shape and shape ~= 0 then
 		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
 		local matMult = self:GetMaterialMultiplier(shape, hitPos, dist)
 		finalDamage = finalDamage * matMult
+		hitBody = GetShapeBody(shape)
+	end
+
+	-- Capture velocity of hit body before Shoot() applies impulse
+	local velBefore = nil
+	if hit and hitBody ~= 0 and IsBodyDynamic(hitBody) and self.pushScale < 1.0 then
+		velBefore = GetBodyVelocity(hitBody)
 	end
 
 	-- Shoot() with holeScale controls visible crater size
 	Shoot(muzzlePos, dir, self.bulletType, finalDamage * self.holeScale, self.range, p, self.toolId)
+
+	-- Counteract excess physics push from Shoot()
+	-- pushScale=0 means no push at all, 0.5 means half push, 1.0 means full (default)
+	if velBefore and hitBody ~= 0 and IsBodyDynamic(hitBody) then
+		local velAfter = GetBodyVelocity(hitBody)
+		local impulse = VecSub(velAfter, velBefore)
+		local reduction = VecScale(impulse, 1.0 - self.pushScale)
+		SetBodyVelocity(hitBody, VecSub(velAfter, reduction))
+	end
 
 	-- Extra penetration via MakeHole (tiny surface, deep core)
 	if hit and self.penScale > 0 then
