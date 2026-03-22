@@ -38,21 +38,34 @@
 -- do 30% damage, and beyond 3m you can barely scratch it.
 
 DEFAULT_MATERIAL_PROPERTIES = {
-	--               mult   range   notes
-	glass        = { 1.5,   40 },  -- shatters from far away
-	foliage      = { 1.8,   45 },  -- no resistance at any distance
-	plaster      = { 1.3,   30 },  -- drywall, crumbles easily
-	dirt         = { 1.2,   30 },  -- soft ground
-	plastic      = { 1.1,   25 },  -- thin plastic
-	wood         = { 1.0,   20 },  -- baseline: splinters but holds, effective at medium range
-	ice          = { 0.9,   18 },  -- slightly harder than wood
-	masonry      = { 0.6,   10 },  -- brick: need to be fairly close
-	rock         = { 0.5,    8 },  -- stone: close range only
-	hardmasonry  = { 0.35,   6 },  -- reinforced concrete: very close
-	metal        = { 0.3,    3 },  -- steel plate: point blank only
-	heavymetal   = { 0.15,   2 },  -- thick steel: literally touching it
-	hardmetal    = { 0.1,    1 },  -- hardened steel: almost impervious
-	unphysical   = { 1.0,   50 },  -- non-physical, no resistance
+	--               mult   range  ricochet?  notes
+	glass        = { 1.5,   40 },  --         shatters, no ricochet
+	foliage      = { 1.8,   45 },  --         absorbs, no ricochet
+	plaster      = { 1.3,   30 },  --         crumbles, no ricochet
+	dirt         = { 1.2,   30 },  --         absorbs, no ricochet
+	plastic      = { 1.1,   25 },  --         absorbs, no ricochet
+	wood         = { 1.0,   20 },  --         splinters, no ricochet
+	ice          = { 0.9,   18 },  --         cracks, slight ricochet
+	masonry      = { 0.6,   10 },  --         chips, can ricochet
+	rock         = { 0.5,    8 },  --         deflects at angles
+	hardmasonry  = { 0.35,   6 },  --         strong ricochet
+	metal        = { 0.3,    3 },  --         classic ricochet surface
+	heavymetal   = { 0.15,   2 },  --         strong ricochet
+	hardmetal    = { 0.1,    1 },  --         strongest ricochet
+	unphysical   = { 1.0,   50 },  --         no ricochet
+}
+
+-- Materials that can ricochet (hard surfaces only)
+-- Value = ricochet efficiency (0-1): how well the material deflects
+-- Higher = cleaner bounce with more retained energy
+DEFAULT_RICOCHET_MATERIALS = {
+	ice          = 0.3,   -- weak deflection, mostly shatters
+	masonry      = 0.4,   -- brick chips but can deflect at shallow angles
+	rock         = 0.6,   -- stone, good deflection
+	hardmasonry  = 0.7,   -- reinforced concrete, strong
+	metal        = 0.85,  -- steel, classic ricochet
+	heavymetal   = 0.9,   -- thick steel, very clean bounce
+	hardmetal    = 0.95,  -- hardened steel, nearly perfect reflection
 }
 
 -- ============================================================
@@ -98,6 +111,9 @@ RegisterCaliber("12gauge", {
 	maxPenetrations = 2,  -- can pass through one surface (thin walls, furniture)
 	penRetain   = 0.35,   -- 35% energy after each pass-through
 	damageVariance = 0.15, -- +/-15% per pellet (buckshot manufacturing variance)
+	maxRicochets = 1,     -- one bounce off hard surfaces
+	ricochetRetain = 0.25, -- 25% energy after bounce (pellets are round, lose energy)
+	ricochetScatter = 0.08, -- scattered reflection (round pellets bounce unpredictably)
 	materials   = {
 		glass     = { 1.8,  40 },
 		wood      = { 1.2,  18 },
@@ -121,6 +137,9 @@ RegisterCaliber("9mm", {
 	maxPenetrations = 2,  -- can pass through drywall, thin wood
 	penRetain   = 0.3,    -- 30% energy retained
 	damageVariance = 0.08, -- +/-8% (factory ammo, fairly consistent)
+	maxRicochets = 1,     -- one bounce
+	ricochetRetain = 0.3,  -- 30% retained (jacketed round, cleaner bounce than buckshot)
+	ricochetScatter = 0.04,
 })
 
 RegisterCaliber("5.56nato", {
@@ -137,6 +156,9 @@ RegisterCaliber("5.56nato", {
 	maxPenetrations = 3,  -- high velocity, passes through multiple thin surfaces
 	penRetain   = 0.45,   -- 45% retained — tumbles but keeps going
 	damageVariance = 0.05, -- +/-5% (military spec, tight tolerance)
+	maxRicochets = 2,     -- two bounces (high velocity, maintains trajectory)
+	ricochetRetain = 0.35,
+	ricochetScatter = 0.03, -- tight scatter (pointed bullet, predictable deflection)
 	materials   = {
 		wood      = { 1.2,  40 },
 		masonry   = { 0.7,  20 },
@@ -159,6 +181,9 @@ RegisterCaliber("7.62nato", {
 	maxPenetrations = 3,  -- heavy round, punches through walls
 	penRetain   = 0.5,    -- 50% retained — keeps most energy
 	damageVariance = 0.05, -- +/-5% (military spec)
+	maxRicochets = 2,
+	ricochetRetain = 0.4,  -- heavy round keeps more energy on bounce
+	ricochetScatter = 0.03,
 	materials   = {
 		wood      = { 1.3,  50 },
 		masonry   = { 0.8,  30 },
@@ -181,6 +206,9 @@ RegisterCaliber("50bmg", {
 	maxPenetrations = 4,  -- anti-material, goes through almost anything
 	penRetain   = 0.6,    -- 60% retained — massive energy reserve
 	damageVariance = 0.03, -- +/-3% (match-grade precision)
+	maxRicochets = 2,
+	ricochetRetain = 0.45, -- massive round, lots of energy on bounce
+	ricochetScatter = 0.02, -- very predictable deflection
 	materials   = {
 		wood      = { 1.5,  80 },
 		masonry   = { 1.0,  50 },
@@ -240,6 +268,17 @@ function CreateBallisticsProfile(cfg)
 		end
 	end
 
+	-- Merge ricochet materials
+	local ricochetMats = {}
+	for k, v in pairs(DEFAULT_RICOCHET_MATERIALS) do
+		ricochetMats[k] = v
+	end
+	if cfg.ricochetMaterials then
+		for k, v in pairs(cfg.ricochetMaterials) do
+			ricochetMats[k] = v
+		end
+	end
+
 	local profile = {
 		-- Damage
 		damage       = cfg.damage or 10,        -- base damage per projectile
@@ -272,6 +311,13 @@ function CreateBallisticsProfile(cfg)
 
 		-- Per-pellet variance (0 = uniform, 0.15 = +/-15% randomized damage)
 		damageVariance = cfg.damageVariance or 0,
+
+		-- Ricochet
+		ricochetAngle   = cfg.ricochetAngle or 45,    -- max incidence angle in degrees for ricochet (0=never, 90=always)
+		ricochetRetain  = cfg.ricochetRetain or 0.3,   -- energy retained after bounce (exponential per bounce)
+		ricochetScatter = cfg.ricochetScatter or 0.05, -- random scatter added to reflection (imperfect bounce)
+		maxRicochets    = cfg.maxRicochets or 0,       -- max bounces (0 = no ricochet, backward compatible)
+		ricochetMats    = ricochetMats,                -- material name -> ricochet efficiency (0-1)
 
 		-- Identity
 		toolId       = cfg.toolId or "unknown",  -- kill feed attribution
@@ -360,7 +406,8 @@ end
 --- @param _energy number|nil Internal: remaining energy (nil = full power, used for recursive pass-through)
 --- @param _depth number|nil Internal: current penetration depth (nil = 0, used to cap recursion)
 --- @param _totalDist number|nil Internal: total distance traveled from original muzzle (for falloff)
-function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _totalDist)
+--- @param _ricochetCount number|nil Internal: number of ricochets so far
+function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _totalDist, _ricochetCount)
 	local depth = _depth or 0
 	local totalDist = _totalDist or 0
 	local baseDamage = self.damage / 100
@@ -415,21 +462,63 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 		MakeHole(hitPos, 0.01, 0.01, finalDamage * self.penScale)
 	end
 
-	-- Overpenetration: if the pellet has enough energy to pass through,
-	-- continue on the other side with reduced damage.
-	-- Only triggers if: we hit something, haven't exceeded max penetrations,
-	-- and the pellet retained enough energy to matter.
-	if hit and depth < self.maxPenetrations - 1 then
-		local remainingEnergy = finalDamage * self.penRetain
-		local minUsefulDamage = baseDamage * 0.05  -- stop if below 5% of original
+	-- Continuation: ricochet OR overpenetration (mutually exclusive per hit)
+	-- Decision: shallow angle + hard material = ricochet, steep angle = overpenetrate
+	if hit then
+		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
+		local minUsefulDamage = baseDamage * 0.05
 
-		if remainingEnergy > minUsefulDamage then
-			-- Exit point: slightly past the hit surface along the direction
-			local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
-			local exitPos = VecAdd(hitPos, VecScale(dir, 0.15))  -- 15cm past the surface
+		-- Check ricochet conditions
+		local didRicochet = false
+		if self.maxRicochets > 0 and (_ricochetCount or 0) < self.maxRicochets and normal then
+			-- Incidence angle: 0° = head-on (no ricochet), 90° = parallel (perfect ricochet)
+			local cosAngle = math.abs(VecDot(dir, normal))
+			local incidenceAngle = 90 - math.deg(math.acos(math.min(cosAngle, 1.0)))
 
-			-- Continue with reduced energy
-			self:FireProjectile(exitPos, dir, p, remainingEnergy, depth + 1, totalDist + dist)
+			-- Check if material can ricochet
+			local matName = ""
+			if shape and shape ~= 0 then
+				local ok, m = pcall(GetShapeMaterialAtPosition, shape, hitPos)
+				if ok and m then matName = m end
+			end
+			local ricochetEff = self.ricochetMats[matName] or 0
+
+			-- Ricochet triggers at shallow angles on hard surfaces
+			if incidenceAngle <= self.ricochetAngle and ricochetEff > 0 then
+				-- Reflect direction: dir - 2 * dot(dir, normal) * normal
+				local dotDN = VecDot(dir, normal)
+				local reflectDir = VecSub(dir, VecScale(normal, 2 * dotDN))
+
+				-- Add scatter (imperfect reflection)
+				if self.ricochetScatter > 0 then
+					local perp = randomPerpendicular(reflectDir)
+					local scatter = self.ricochetScatter * math.random()
+					reflectDir = VecNormalize(VecAdd(reflectDir, VecScale(perp, scatter)))
+				end
+
+				-- Energy after bounce: base retain * material efficiency * angle factor
+				-- Shallower angles retain more energy (grazing = clean deflection)
+				local angleFactor = 1.0 - (incidenceAngle / self.ricochetAngle) * 0.5
+				local bounceEnergy = finalDamage * self.ricochetRetain * ricochetEff * angleFactor
+
+				if bounceEnergy > minUsefulDamage then
+					local bouncePos = VecAdd(hitPos, VecScale(reflectDir, 0.05))
+					self:FireProjectile(bouncePos, reflectDir, p, bounceEnergy,
+						depth, totalDist + dist, (_ricochetCount or 0) + 1)
+					didRicochet = true
+				end
+			end
+		end
+
+		-- Overpenetration: only if we didn't ricochet
+		if not didRicochet and depth < self.maxPenetrations - 1 then
+			local remainingEnergy = finalDamage * self.penRetain
+
+			if remainingEnergy > minUsefulDamage then
+				local exitPos = VecAdd(hitPos, VecScale(dir, 0.15))
+				self:FireProjectile(exitPos, dir, p, remainingEnergy,
+					depth + 1, totalDist + dist, _ricochetCount)
+			end
 		end
 	end
 end
