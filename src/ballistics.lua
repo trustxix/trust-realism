@@ -349,21 +349,36 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 
 	-- Capture velocity of hit body before Shoot() applies impulse
 	local velBefore = nil
-	if hit and hitBody ~= 0 and IsBodyDynamic(hitBody) and self.pushScale < 1.0 then
+	if hit and hitBody ~= 0 and IsBodyDynamic(hitBody) then
 		velBefore = GetBodyVelocity(hitBody)
 	end
 
 	-- Shoot() with holeScale controls visible crater size
 	Shoot(muzzlePos, dir, self.bulletType, finalDamage * self.holeScale, self.range, p, self.toolId)
 
-	-- Counteract excess physics push from Shoot()
-	-- Push scales with distance using the same falloff curve as damage —
-	-- point blank = full push, far away = barely moves
+	-- Physics push correction
+	-- Real physics: if a bullet punches THROUGH an object, most energy exits
+	-- the other side — the object barely moves. If the bullet STOPS inside
+	-- (low damage, hard material, long range), all energy transfers to the object.
+	--
+	-- penetrationRatio: how much of the pellet's energy went into destroying material
+	-- vs passing through. High finalDamage = punches through = low push.
+	-- Low finalDamage = stops inside = higher push (up to pushScale cap).
 	if velBefore and hitBody ~= 0 and IsBodyDynamic(hitBody) then
 		local velAfter = GetBodyVelocity(hitBody)
 		local impulse = VecSub(velAfter, velBefore)
-		local pushAtDist = self.pushScale * falloff  -- falloff already computed for this shot
-		local reduction = VecScale(impulse, 1.0 - pushAtDist)
+
+		-- How much damage vs the base? High ratio = overpowering the material = pass-through
+		local baseDamage = self.damage / 100
+		local penetrationRatio = math.min(finalDamage / baseDamage, 1.0)
+
+		-- Invert: high penetration = low push, low penetration = more push
+		-- At full power point blank: penetrationRatio ~1.0 → absorbed ~0.05 (5%)
+		-- At far range weak hit: penetrationRatio ~0.15 → absorbed ~0.85 (85%)
+		local absorbed = 1.0 - penetrationRatio * 0.95
+
+		local effectivePush = self.pushScale * falloff * absorbed
+		local reduction = VecScale(impulse, 1.0 - effectivePush)
 		SetBodyVelocity(hitBody, VecSub(velAfter, reduction))
 	end
 
