@@ -1221,6 +1221,16 @@ end
 --- Draw the options panel. Call in client.draw. Host-only interactive.
 -- All elements positioned relative to panel bounds -- nothing bleeds outside.
 -- Scroll support when too many fields to fit.
+--- Check if ANY options menu is currently open. Use this to gate gameplay input.
+-- Call once at the top of client.tickPlayer: if IsAnyMenuOpen() then return end
+-- This is automatic — no per-mod code needed beyond that one check.
+function IsAnyMenuOpen()
+	for _, menu in pairs(_OPTIONS_MENUS) do
+		if menu.open then return true end
+	end
+	return _MASTER_PANEL_OPEN
+end
+
 function OptionsMenu:Draw(p)
 	if not self.open then return end
 
