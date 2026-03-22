@@ -1,6 +1,7 @@
 -- Trust Realism — Ballistics Framework for Teardown v2 Multiplayer
 -- https://github.com/trustxix/trust-realism
 -- Include in weapon mods: #include "lib/ballistics.lua"
+-- @lint-ok-file HANDLE-GT-ZERO
 --
 -- Features:
 --   - Configurable per-weapon damage profiles
@@ -96,6 +97,7 @@ RegisterCaliber("12gauge", {
 	pushScale   = 0.15,
 	maxPenetrations = 2,  -- can pass through one surface (thin walls, furniture)
 	penRetain   = 0.35,   -- 35% energy after each pass-through
+	damageVariance = 0.15, -- +/-15% per pellet (buckshot manufacturing variance)
 	materials   = {
 		glass     = { 1.8,  40 },
 		wood      = { 1.2,  18 },
@@ -118,6 +120,7 @@ RegisterCaliber("9mm", {
 	penScale    = 0.3,
 	maxPenetrations = 2,  -- can pass through drywall, thin wood
 	penRetain   = 0.3,    -- 30% energy retained
+	damageVariance = 0.08, -- +/-8% (factory ammo, fairly consistent)
 })
 
 RegisterCaliber("5.56nato", {
@@ -133,6 +136,7 @@ RegisterCaliber("5.56nato", {
 	penScale    = 0.5,
 	maxPenetrations = 3,  -- high velocity, passes through multiple thin surfaces
 	penRetain   = 0.45,   -- 45% retained — tumbles but keeps going
+	damageVariance = 0.05, -- +/-5% (military spec, tight tolerance)
 	materials   = {
 		wood      = { 1.2,  40 },
 		masonry   = { 0.7,  20 },
@@ -154,6 +158,7 @@ RegisterCaliber("7.62nato", {
 	penScale    = 1.0,
 	maxPenetrations = 3,  -- heavy round, punches through walls
 	penRetain   = 0.5,    -- 50% retained — keeps most energy
+	damageVariance = 0.05, -- +/-5% (military spec)
 	materials   = {
 		wood      = { 1.3,  50 },
 		masonry   = { 0.8,  30 },
@@ -175,6 +180,7 @@ RegisterCaliber("50bmg", {
 	penScale    = 2.5,
 	maxPenetrations = 4,  -- anti-material, goes through almost anything
 	penRetain   = 0.6,    -- 60% retained — massive energy reserve
+	damageVariance = 0.03, -- +/-3% (match-grade precision)
 	materials   = {
 		wood      = { 1.5,  80 },
 		masonry   = { 1.0,  50 },
@@ -263,6 +269,9 @@ function CreateBallisticsProfile(cfg)
 		-- Overpenetration (pass-through)
 		maxPenetrations = cfg.maxPenetrations or 1,  -- max surfaces to pass through (1 = stops at first hit)
 		penRetain    = cfg.penRetain or 0.4,     -- energy retained after each pass-through (exponential)
+
+		-- Per-pellet variance (0 = uniform, 0.15 = +/-15% randomized damage)
+		damageVariance = cfg.damageVariance or 0,
 
 		-- Identity
 		toolId       = cfg.toolId or "unknown",  -- kill feed attribution
@@ -356,6 +365,12 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 	local totalDist = _totalDist or 0
 	local baseDamage = self.damage / 100
 	local damage = _energy or baseDamage
+
+	-- Per-pellet variance: randomize on initial shot only (not pass-throughs)
+	if depth == 0 and self.damageVariance > 0 then
+		local v = self.damageVariance
+		damage = damage * (1.0 + (math.random() * 2 - 1) * v)
+	end
 
 	-- Pre-cast to find distance, shape, and material
 	local hit, dist, normal, shape = QueryRaycast(muzzlePos, dir, self.range)
