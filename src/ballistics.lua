@@ -1123,3 +1123,213 @@ end
 
 -- ToolProfile shares InitSounds with BallisticsProfile
 ToolProfile.InitSounds = BallisticsProfile.InitSounds
+
+-- ============================================================
+-- Options menu system (host-only, O key)
+-- ============================================================
+-- Standardized options panel for any weapon/tool. Host-only: reads/writes
+-- savegame keys, syncs to shared for client display. Follows UI_STANDARDS.md.
+--
+-- Usage:
+--   local opts = CreateOptionsMenu("my-tool", {
+--       { key = "pullPower",  label = "Pull Power",  type = "slider", min = 10, max = 500, default = 120 },
+--       { key = "pullTime",   label = "Pull Time",   type = "slider", min = 0.5, max = 5, default = 1.5, step = 0.1 },
+--       { key = "linkSpeed",  label = "Link Speed to Power", type = "toggle", default = false },
+--   })
+--
+--   -- In server.init:  opts:Init()
+--   -- In client.draw:  opts:Draw(p)
+--   -- Read values:     opts:Get("pullPower")
+--   -- Sync to server:  opts:ServerSync(p) in ServerCall handler
+
+_OPTIONS_MENUS = {}
+
+function CreateOptionsMenu(toolId, fields)
+	local menu = {
+		toolId = toolId,
+		fields = fields or {},
+		open = false,
+		_prefix = "savegame.mod." .. toolId .. ".",
+	}
+	setmetatable(menu, { __index = OptionsMenu })
+	_OPTIONS_MENUS[toolId] = menu
+	return menu
+end
+
+OptionsMenu = {}
+
+--- Initialize options from savegame (set defaults if keys don't exist).
+-- Call in server.init.
+function OptionsMenu:Init()
+	shared.toolOptions = shared.toolOptions or {}
+	shared.toolOptions[self.toolId] = shared.toolOptions[self.toolId] or {}
+	for _, f in ipairs(self.fields) do
+		local key = self._prefix .. f.key
+		if f.type == "slider" then
+			if not HasKey(key) then
+				SetFloat(key, f.default or 0)
+			end
+			shared.toolOptions[self.toolId][f.key] = GetFloat(key)
+		elseif f.type == "toggle" then
+			if not HasKey(key) then
+				SetBool(key, f.default or false)
+			end
+			shared.toolOptions[self.toolId][f.key] = GetBool(key)
+		end
+	end
+end
+
+--- Get an option value. Reads from shared (works on server and client).
+function OptionsMenu:Get(key)
+	local opts = shared.toolOptions and shared.toolOptions[self.toolId]
+	if opts and opts[key] ~= nil then return opts[key] end
+	-- Fallback: find default
+	for _, f in ipairs(self.fields) do
+		if f.key == key then return f.default end
+	end
+	return nil
+end
+
+--- Set an option value. Writes to savegame + shared. HOST only.
+function OptionsMenu:Set(key, value)
+	local fullKey = self._prefix .. key
+	for _, f in ipairs(self.fields) do
+		if f.key == key then
+			if f.type == "slider" then
+				SetFloat(fullKey, value)
+			elseif f.type == "toggle" then
+				SetBool(fullKey, value)
+			end
+			shared.toolOptions = shared.toolOptions or {}
+			shared.toolOptions[self.toolId] = shared.toolOptions[self.toolId] or {}
+			shared.toolOptions[self.toolId][key] = value
+			return
+		end
+	end
+end
+
+--- Toggle the menu open/closed. Call from client when O is pressed.
+function OptionsMenu:Toggle()
+	self.open = not self.open
+end
+
+--- Check if menu is open.
+function OptionsMenu:IsOpen()
+	return self.open
+end
+
+--- Draw the options panel. Call in client.draw. Host-only interactive.
+-- Per UI_STANDARDS.md: UiMakeInteractive, dark background, centered panel.
+function OptionsMenu:Draw(p)
+	if not self.open then return end
+
+	local fieldCount = #self.fields
+	local panelHeight = 80 + fieldCount * 50 + 60
+
+	UiMakeInteractive()
+	UiPush()
+	UiTranslate(20, UiMiddle() - panelHeight / 2)
+	UiAlign("top left")
+	UiColor(0, 0, 0, 0.85)
+	UiImageBox("ui/common/box-solid-6.png", 420, panelHeight, 6, 6)
+
+	-- Title
+	UiTranslate(210, 30)
+	UiAlign("center middle")
+	UiColor(1, 1, 1)
+	UiFont("bold.ttf", 20)
+	UiText(self.toolId .. " Options")
+
+	-- Fields
+	UiTranslate(-180, 30)
+	UiFont("regular.ttf", 16)
+	UiAlign("left middle")
+
+	for _, f in ipairs(self.fields) do
+		UiTranslate(0, 45)
+		local val = self:Get(f.key)
+
+		if f.type == "slider" then
+			UiColor(1, 1, 1, 0.9)
+			UiText(f.label)
+
+			UiPush()
+			UiTranslate(220, -8)
+			UiColor(0.2, 0.6, 1)
+			local range = f.max - f.min
+			local norm = (val - f.min) / range
+			local w = 140
+			UiRect(w, 3)
+			UiAlign("center middle")
+			UiTranslate(-140, 1)
+			norm = UiSlider("ui/common/dot.png", "x", norm * w, 0, w) / w
+			local step = f.step or 1
+			local newVal = math.floor((norm * range + f.min) / step + 0.5) * step
+			if newVal ~= val and IsPlayerHost() then
+				self:Set(f.key, newVal)
+			end
+			UiPop()
+
+			UiPush()
+			UiTranslate(370, 0)
+			UiColor(0.7, 0.6, 0.1)
+			UiAlign("left middle")
+			if step < 1 then
+				UiText(string.format("%.1f", newVal or val))
+			else
+				UiText(math.floor(newVal or val))
+			end
+			UiPop()
+
+		elseif f.type == "toggle" then
+			UiColor(1, 1, 1, 0.9)
+			UiText(f.label)
+
+			UiPush()
+			UiTranslate(250, 0)
+			UiButtonImageBox("ui/common/box-outline-6.png", 6, 6)
+			if val then
+				UiColor(0.2, 0.65, 0.2)
+				if UiTextButton("ON", 50, 25) and IsPlayerHost() then
+					self:Set(f.key, false)
+				end
+			else
+				UiColor(0.5, 0.5, 0.5)
+				if UiTextButton("OFF", 50, 25) and IsPlayerHost() then
+					self:Set(f.key, true)
+				end
+			end
+			UiPop()
+		end
+	end
+
+	-- Default + Close buttons
+	UiTranslate(0, 55)
+	UiAlign("left middle")
+	UiButtonImageBox("ui/common/box-outline-6.png", 6, 6)
+
+	UiPush()
+	UiTranslate(60, 0)
+	UiColor(0.5, 0.8, 1)
+	if UiTextButton("Default", 80, 28) and IsPlayerHost() then
+		for _, f in ipairs(self.fields) do
+			self:Set(f.key, f.default)
+		end
+	end
+	UiPop()
+
+	UiPush()
+	UiTranslate(220, 0)
+	UiColor(1, 0.4, 0.4)
+	if UiTextButton("Close", 80, 28) then
+		self.open = false
+	end
+	UiPop()
+
+	UiPop()
+
+	-- ESC closes
+	if InputPressed("esc") then
+		self.open = false
+	end
+end
