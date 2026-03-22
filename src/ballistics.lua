@@ -193,7 +193,8 @@ RegisterCaliber("12gauge", {
 	maxRicochets = 1,
 	ricochetRetain = 0.25,
 	ricochetScatter = 0.08,
-	soundVolume = 0.8,    -- loud boom
+	soundVolume = 0.8,
+	ammo = { magazineSize = 8, reserveDefault = 32, reloadTime = 1.5 },
 	materials   = {
 		glass     = { 1.8,  40 },
 		wood      = { 1.2,  18 },
@@ -218,8 +219,9 @@ RegisterCaliber("9mm", {
 	penRetain   = 0.3,    -- 30% energy retained
 	damageVariance = 0.08, -- +/-8% (factory ammo, fairly consistent)
 	maxRicochets = 1,     -- one bounce
-	ricochetRetain = 0.3,  -- 30% retained (jacketed round, cleaner bounce than buckshot)
+	ricochetRetain = 0.3,
 	ricochetScatter = 0.04,
+	ammo = { magazineSize = 15, reserveDefault = 60, reloadTime = 1.2 },
 })
 
 RegisterCaliber("5.56nato", {
@@ -238,7 +240,8 @@ RegisterCaliber("5.56nato", {
 	damageVariance = 0.05, -- +/-5% (military spec, tight tolerance)
 	maxRicochets = 2,     -- two bounces (high velocity, maintains trajectory)
 	ricochetRetain = 0.35,
-	ricochetScatter = 0.03, -- tight scatter (pointed bullet, predictable deflection)
+	ricochetScatter = 0.03,
+	ammo = { magazineSize = 30, reserveDefault = 120, reloadTime = 2.0 },
 	materials   = {
 		wood      = { 1.2,  40 },
 		masonry   = { 0.7,  20 },
@@ -262,8 +265,9 @@ RegisterCaliber("7.62nato", {
 	penRetain   = 0.5,    -- 50% retained -- keeps most energy
 	damageVariance = 0.05, -- +/-5% (military spec)
 	maxRicochets = 2,
-	ricochetRetain = 0.4,  -- heavy round keeps more energy on bounce
+	ricochetRetain = 0.4,
 	ricochetScatter = 0.03,
+	ammo = { magazineSize = 20, reserveDefault = 80, reloadTime = 2.2 },
 	materials   = {
 		wood      = { 1.3,  50 },
 		masonry   = { 0.8,  30 },
@@ -287,8 +291,9 @@ RegisterCaliber("50bmg", {
 	penRetain   = 0.6,    -- 60% retained -- massive energy reserve
 	damageVariance = 0.03, -- +/-3% (match-grade precision)
 	maxRicochets = 2,
-	ricochetRetain = 0.45, -- massive round, lots of energy on bounce
-	ricochetScatter = 0.02, -- very predictable deflection
+	ricochetRetain = 0.45,
+	ricochetScatter = 0.02,
+	ammo = { magazineSize = 5, reserveDefault = 20, reloadTime = 3.0 },
 	materials   = {
 		wood      = { 1.5,  80 },
 		masonry   = { 1.0,  50 },
@@ -603,6 +608,108 @@ _BALLISTICS_ACTIVE_PROFILE = nil
 -- Detection: try calling a server-only function (SetToolAmmo with dummy args).
 -- On client, it silently fails or errors. We use a simpler approach: track
 -- which context we're in via a flag set by the mod's server/client callbacks.
+
+-- ============================================================
+-- Ammo / magazine system
+-- ============================================================
+-- Server-authoritative: server owns magazine + reserve state per player.
+-- Syncs to clients via shared.ballisticsAmmo[player] for HUD display.
+-- No double-processing risk: all ammo state is server-only.
+
+--- Initialize ammo state for a player. Call in server.tick PlayersAdded.
+function BallisticsProfile:InitAmmo(p)
+	if not self.ammo then return end
+	shared.ballisticsAmmo = shared.ballisticsAmmo or {}
+	shared.ballisticsAmmo[p] = {
+		magazine = self.ammo.magazineSize or 8,
+		reserve = self.ammo.reserveDefault or 32,
+		reloading = false,
+		reloadTimer = 0,
+	}
+end
+
+--- Clean up ammo state for a player. Call in server.tick PlayersRemoved.
+function BallisticsProfile:CleanupAmmo(p)
+	if shared.ballisticsAmmo then
+		shared.ballisticsAmmo[p] = nil
+	end
+end
+
+--- Check if the weapon can fire (has ammo, not reloading). SERVER only.
+function BallisticsProfile:CanFire(p)
+	if not self.ammo then return true end
+	local state = shared.ballisticsAmmo and shared.ballisticsAmmo[p]
+	if not state then return true end
+	return state.magazine > 0 and not state.reloading
+end
+
+--- Consume one round from the magazine. Call after firing. SERVER only.
+-- Returns true if consumed, false if empty. Auto-triggers reload if empty.
+function BallisticsProfile:ConsumeAmmo(p)
+	if not self.ammo then return true end
+	local state = shared.ballisticsAmmo and shared.ballisticsAmmo[p]
+	if not state then return true end
+	if state.magazine <= 0 then return false end
+
+	state.magazine = state.magazine - 1
+
+	-- Auto-reload when empty
+	if state.magazine <= 0 and state.reserve > 0 then
+		state.reloading = true
+		state.reloadTimer = self.ammo.reloadTime or 1.5
+	end
+	return true
+end
+
+--- Start a manual reload (R key). SERVER only.
+-- Conservative reload: only transfers shells needed, not full magazine.
+function BallisticsProfile:StartReload(p)
+	if not self.ammo then return end
+	local state = shared.ballisticsAmmo and shared.ballisticsAmmo[p]
+	if not state then return end
+	if state.reloading then return end
+	local magSize = self.ammo.magazineSize or 8
+	if state.magazine >= magSize then return end
+	if state.reserve <= 0 then return end
+	state.reloading = true
+	state.reloadTimer = self.ammo.reloadTime or 1.5
+end
+
+--- Tick the reload timer. Call in server.tickPlayer every frame. SERVER only.
+function BallisticsProfile:TickAmmo(p, dt)
+	if not self.ammo then return end
+	local state = shared.ballisticsAmmo and shared.ballisticsAmmo[p]
+	if not state then return end
+
+	if state.reloading then
+		state.reloadTimer = state.reloadTimer - dt
+		if state.reloadTimer <= 0 then
+			local magSize = self.ammo.magazineSize or 8
+			local needed = magSize - state.magazine
+			local available = math.min(needed, state.reserve)
+			state.magazine = state.magazine + available
+			state.reserve = state.reserve - available
+			state.reloading = false
+			state.reloadTimer = 0
+		end
+	end
+end
+
+--- Get ammo display text for HUD. Reads from shared (works on client).
+function BallisticsProfile:GetAmmoDisplay(p)
+	if not self.ammo then return "" end
+	local state = shared.ballisticsAmmo and shared.ballisticsAmmo[p]
+	if not state then return "" end
+	if state.reloading then return "RELOADING..." end
+	if state.magazine <= 0 and state.reserve <= 0 then return "EMPTY" end
+	return state.magazine .. " | " .. state.reserve
+end
+
+--- Get raw ammo state (for custom HUD). Reads from shared.
+function BallisticsProfile:GetAmmoState(p)
+	if not self.ammo then return nil end
+	return shared.ballisticsAmmo and shared.ballisticsAmmo[p]
+end
 
 _BALLISTICS_SERVER_CONTEXT = false
 
