@@ -93,7 +93,9 @@ RegisterCaliber("12gauge", {
 	minFalloff  = 0.15,
 	holeScale   = 0.5,
 	penScale    = 1.0,
-	pushScale   = 0.15,   -- shotgun pellets nudge objects, don't launch them
+	pushScale   = 0.15,
+	maxPenetrations = 2,  -- can pass through one surface (thin walls, furniture)
+	penRetain   = 0.35,   -- 35% energy after each pass-through
 	materials   = {
 		glass     = { 1.8,  40 },
 		wood      = { 1.2,  18 },
@@ -114,6 +116,8 @@ RegisterCaliber("9mm", {
 	minFalloff  = 0.15,
 	holeScale   = 0.8,
 	penScale    = 0.3,
+	maxPenetrations = 2,  -- can pass through drywall, thin wood
+	penRetain   = 0.3,    -- 30% energy retained
 })
 
 RegisterCaliber("5.56nato", {
@@ -127,6 +131,8 @@ RegisterCaliber("5.56nato", {
 	minFalloff  = 0.25,
 	holeScale   = 1.0,
 	penScale    = 0.5,
+	maxPenetrations = 3,  -- high velocity, passes through multiple thin surfaces
+	penRetain   = 0.45,   -- 45% retained — tumbles but keeps going
 	materials   = {
 		wood      = { 1.2,  40 },
 		masonry   = { 0.7,  20 },
@@ -146,6 +152,8 @@ RegisterCaliber("7.62nato", {
 	minFalloff  = 0.3,
 	holeScale   = 1.0,
 	penScale    = 1.0,
+	maxPenetrations = 3,  -- heavy round, punches through walls
+	penRetain   = 0.5,    -- 50% retained — keeps most energy
 	materials   = {
 		wood      = { 1.3,  50 },
 		masonry   = { 0.8,  30 },
@@ -165,6 +173,8 @@ RegisterCaliber("50bmg", {
 	minFalloff  = 0.4,
 	holeScale   = 1.2,
 	penScale    = 2.5,
+	maxPenetrations = 4,  -- anti-material, goes through almost anything
+	penRetain   = 0.6,    -- 60% retained — massive energy reserve
 	materials   = {
 		wood      = { 1.5,  80 },
 		masonry   = { 1.0,  50 },
@@ -250,6 +260,10 @@ function CreateBallisticsProfile(cfg)
 		-- Physics push (0 = no push, 0.3 = gentle, 1.0 = full Shoot() default)
 		pushScale    = cfg.pushScale or 1.0,     -- how much objects get pushed by impacts
 
+		-- Overpenetration (pass-through)
+		maxPenetrations = cfg.maxPenetrations or 1,  -- max surfaces to pass through (1 = stops at first hit)
+		penRetain    = cfg.penRetain or 0.4,     -- energy retained after each pass-through (exponential)
+
 		-- Identity
 		toolId       = cfg.toolId or "unknown",  -- kill feed attribution
 	}
@@ -329,20 +343,31 @@ end
 -- ============================================================
 
 --- Fire a single projectile with falloff, material resistance, decoupled penetration,
---- and controlled physics push. Call on SERVER only. Shoot() auto-syncs to all clients.
-function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
-	local damage = self.damage / 100
+--- controlled physics push, and overpenetration (pass-through).
+--- Call on SERVER only. Shoot() auto-syncs to all clients.
+--- @param muzzlePos vec Origin point
+--- @param dir vec Direction (normalized)
+--- @param p number Player ID
+--- @param _energy number|nil Internal: remaining energy (nil = full power, used for recursive pass-through)
+--- @param _depth number|nil Internal: current penetration depth (nil = 0, used to cap recursion)
+--- @param _totalDist number|nil Internal: total distance traveled from original muzzle (for falloff)
+function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _totalDist)
+	local depth = _depth or 0
+	local totalDist = _totalDist or 0
+	local baseDamage = self.damage / 100
+	local damage = _energy or baseDamage
 
 	-- Pre-cast to find distance, shape, and material
 	local hit, dist, normal, shape = QueryRaycast(muzzlePos, dir, self.range)
-	local falloff = hit and self:GetFalloff(dist) or 1.0
+	local falloff = hit and self:GetFalloff(totalDist + (dist or 0)) or 1.0
 	local finalDamage = damage * falloff
 
 	-- Material resistance: reduce damage based on what was hit AND how far away
 	local hitBody = 0
+	local matMult = 1.0
 	if hit and shape and shape ~= 0 then
 		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
-		local matMult = self:GetMaterialMultiplier(shape, hitPos, dist)
+		matMult = self:GetMaterialMultiplier(shape, hitPos, totalDist + dist)
 		finalDamage = finalDamage * matMult
 		hitBody = GetShapeBody(shape)
 	end
@@ -357,26 +382,11 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 	Shoot(muzzlePos, dir, self.bulletType, finalDamage * self.holeScale, self.range, p, self.toolId)
 
 	-- Physics push correction
-	-- Real physics: if a bullet punches THROUGH an object, most energy exits
-	-- the other side — the object barely moves. If the bullet STOPS inside
-	-- (low damage, hard material, long range), all energy transfers to the object.
-	--
-	-- penetrationRatio: how much of the pellet's energy went into destroying material
-	-- vs passing through. High finalDamage = punches through = low push.
-	-- Low finalDamage = stops inside = higher push (up to pushScale cap).
 	if velBefore and hitBody ~= 0 and IsBodyDynamic(hitBody) then
 		local velAfter = GetBodyVelocity(hitBody)
 		local impulse = VecSub(velAfter, velBefore)
 
-		-- How much damage vs the base? High ratio = overpowering the material = pass-through
-		local baseDamage = self.damage / 100
 		local penetrationRatio = math.min(finalDamage / baseDamage, 1.0)
-
-		-- Exponential inverse: high penetration = low push, low penetration = more push
-		-- penetrationRatio 1.0 (full power, passes through) → absorbed ≈ 0.05
-		-- penetrationRatio 0.5 (half power)                 → absorbed ≈ 0.22
-		-- penetrationRatio 0.1 (weak, stops inside)         → absorbed ≈ 0.73
-		-- penetrationRatio 0.0 (no damage at all)           → absorbed = 1.0
 		local absorbed = math.pow(0.05, penetrationRatio)
 
 		local effectivePush = self.pushScale * falloff * absorbed
@@ -388,6 +398,24 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p)
 	if hit and self.penScale > 0 then
 		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
 		MakeHole(hitPos, 0.01, 0.01, finalDamage * self.penScale)
+	end
+
+	-- Overpenetration: if the pellet has enough energy to pass through,
+	-- continue on the other side with reduced damage.
+	-- Only triggers if: we hit something, haven't exceeded max penetrations,
+	-- and the pellet retained enough energy to matter.
+	if hit and depth < self.maxPenetrations - 1 then
+		local remainingEnergy = finalDamage * self.penRetain
+		local minUsefulDamage = baseDamage * 0.05  -- stop if below 5% of original
+
+		if remainingEnergy > minUsefulDamage then
+			-- Exit point: slightly past the hit surface along the direction
+			local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
+			local exitPos = VecAdd(hitPos, VecScale(dir, 0.15))  -- 15cm past the surface
+
+			-- Continue with reduced energy
+			self:FireProjectile(exitPos, dir, p, remainingEnergy, depth + 1, totalDist + dist)
+		end
 	end
 end
 
