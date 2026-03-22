@@ -108,12 +108,13 @@ RegisterCaliber("12gauge", {
 	holeScale   = 0.5,
 	penScale    = 1.0,
 	pushScale   = 0.15,
-	maxPenetrations = 2,  -- can pass through one surface (thin walls, furniture)
-	penRetain   = 0.35,   -- 35% energy after each pass-through
-	damageVariance = 0.15, -- +/-15% per pellet (buckshot manufacturing variance)
-	maxRicochets = 1,     -- one bounce off hard surfaces
-	ricochetRetain = 0.25, -- 25% energy after bounce (pellets are round, lose energy)
-	ricochetScatter = 0.08, -- scattered reflection (round pellets bounce unpredictably)
+	maxPenetrations = 2,
+	penRetain   = 0.35,
+	damageVariance = 0.15,
+	maxRicochets = 1,
+	ricochetRetain = 0.25,
+	ricochetScatter = 0.08,
+	soundVolume = 0.8,    -- loud boom
 	materials   = {
 		glass     = { 1.8,  40 },
 		wood      = { 1.2,  18 },
@@ -319,11 +320,79 @@ function CreateBallisticsProfile(cfg)
 		maxRicochets    = cfg.maxRicochets or 0,       -- max bounces (0 = no ricochet, backward compatible)
 		ricochetMats    = ricochetMats,                -- material name -> ricochet efficiency (0-1)
 
+		-- Sound
+		sounds       = cfg.sounds or nil,        -- { fire = "path", reload = "path", empty = "path" }
+		impactSounds = cfg.impactSounds or nil,   -- { metal = "path", wood = "path", ... }
+		soundVolume  = cfg.soundVolume or 0.75,   -- base volume for fire sound
+		_soundHandles = {},                       -- loaded handles (populated by InitSounds)
+		_impactHandles = {},                      -- loaded impact handles
+		_soundsReady = false,                     -- true after InitSounds() called
+
 		-- Identity
 		toolId       = cfg.toolId or "unknown",  -- kill feed attribution
 	}
 	setmetatable(profile, { __index = BallisticsProfile })
 	return profile
+end
+
+-- ============================================================
+-- Sound system
+-- ============================================================
+
+-- Default impact sound paths per material (mods override with their own paths)
+-- Set to empty table by default — mods provide their own sound files via impactSounds config.
+-- The framework only loads sounds that the mod explicitly provides.
+DEFAULT_IMPACT_SOUNDS = {}
+
+--- Initialize sound handles. Call in BOTH server.init() and client.init().
+-- Server needs fire sound for PlaySound() auto-sync.
+-- Client needs impact sounds for ClientCall handling.
+function BallisticsProfile:InitSounds()
+	if self._soundsReady then return end
+
+	-- Load fire/reload/empty sounds
+	if self.sounds then
+		for key, path in pairs(self.sounds) do
+			if path and path ~= "" then
+				self._soundHandles[key] = LoadSound(path)
+			end
+		end
+	end
+
+	-- Load impact sounds (merge defaults with overrides)
+	local impactPaths = {}
+	for k, v in pairs(DEFAULT_IMPACT_SOUNDS) do impactPaths[k] = v end
+	if self.impactSounds then
+		for k, v in pairs(self.impactSounds) do impactPaths[k] = v end
+	end
+	for mat, path in pairs(impactPaths) do
+		if path and path ~= "" then
+			local ok, handle = pcall(LoadSound, path)
+			if ok and handle then
+				self._impactHandles[mat] = handle
+			end
+		end
+	end
+
+	self._soundsReady = true
+end
+
+--- Play the fire sound at a position. Called automatically by Fire/FireFromTool.
+-- Uses PlaySound() on server = auto-syncs to all clients.
+function BallisticsProfile:PlayFireSound(pos)
+	if self._soundHandles.fire then
+		PlaySound(self._soundHandles.fire, pos, self.soundVolume)
+	end
+end
+
+--- Play impact sound for a material at a position via ClientCall.
+-- Called automatically by FireProjectile on hit.
+function BallisticsProfile:PlayImpactSound(matName, hitPos)
+	local handle = self._impactHandles[matName]
+	if handle then
+		-- PlaySound on server auto-syncs positional audio to all clients
+		PlaySound(handle, hitPos, self.soundVolume * 0.5)
+	end
 end
 
 -- ============================================================
@@ -427,11 +496,15 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 	-- Material resistance: reduce damage based on what was hit AND how far away
 	local hitBody = 0
 	local matMult = 1.0
+	local hitMatName = ""
 	if hit and shape and shape ~= 0 then
 		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
 		matMult = self:GetMaterialMultiplier(shape, hitPos, totalDist + dist)
 		finalDamage = finalDamage * matMult
 		hitBody = GetShapeBody(shape)
+		-- Capture material name for impact sounds and ricochet
+		local ok, m = pcall(GetShapeMaterialAtPosition, shape, hitPos)
+		if ok and m then hitMatName = m end
 	end
 
 	-- Capture velocity of hit body before Shoot() applies impulse
@@ -442,6 +515,12 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 
 	-- Shoot() with holeScale controls visible crater size
 	Shoot(muzzlePos, dir, self.bulletType, finalDamage * self.holeScale, self.range, p, self.toolId)
+
+	-- Impact sound (only on initial hits and first pass-through, not every recursion)
+	if hit and depth <= 1 and self._soundsReady and hitMatName ~= "" then
+		local hitPos = VecAdd(muzzlePos, VecScale(dir, dist))
+		self:PlayImpactSound(hitMatName, hitPos)
+	end
 
 	-- Physics push correction
 	if velBefore and hitBody ~= 0 and IsBodyDynamic(hitBody) then
@@ -475,13 +554,8 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 			local cosAngle = math.abs(VecDot(dir, normal))
 			local incidenceAngle = 90 - math.deg(math.acos(math.min(cosAngle, 1.0)))
 
-			-- Check if material can ricochet
-			local matName = ""
-			if shape and shape ~= 0 then
-				local ok, m = pcall(GetShapeMaterialAtPosition, shape, hitPos)
-				if ok and m then matName = m end
-			end
-			local ricochetEff = self.ricochetMats[matName] or 0
+			-- Check if material can ricochet (reuse hitMatName from earlier)
+			local ricochetEff = self.ricochetMats[hitMatName] or 0
 
 			-- Ricochet triggers at shallow angles on hard surfaces
 			if incidenceAngle <= self.ricochetAngle and ricochetEff > 0 then
@@ -524,8 +598,13 @@ function BallisticsProfile:FireProjectile(muzzlePos, dir, p, _energy, _depth, _t
 end
 
 --- Fire all pellets in a spread pattern from a position + direction.
--- Call on SERVER only.
+-- Plays fire sound once (not per pellet). Call on SERVER only.
 function BallisticsProfile:Fire(muzzlePos, baseDir, p)
+	-- Fire sound: once per shot, PlaySound on server auto-syncs to all clients
+	if self._soundsReady then
+		self:PlayFireSound(muzzlePos)
+	end
+
 	for i = 1, self.pellets do
 		local dir = self:ApplySpread(baseDir)
 		self:FireProjectile(muzzlePos, dir, p)
