@@ -55,10 +55,154 @@ DEFAULT_MATERIAL_PROPERTIES = {
 }
 
 -- ============================================================
+-- Caliber registry — define ammo types once, reuse everywhere
+-- ============================================================
+-- A caliber defines the ballistic properties of ammunition.
+-- Weapons reference a caliber by name and inherit all its properties.
+-- Per-weapon overrides still work — they take priority over the caliber.
+--
+-- Usage:
+--   RegisterCaliber("12gauge", { damage = 28, pellets = 12, spread = 0.07, ... })
+--   local gun = CreateBallisticsProfile({ caliber = "12gauge", toolId = "my-shotgun" })
+--
+-- The weapon inherits everything from 12gauge but can override:
+--   local gun = CreateBallisticsProfile({ caliber = "12gauge", spread = 0.1, toolId = "sawed-off" })
+
+CALIBER_REGISTRY = {}
+
+function RegisterCaliber(name, props)
+	CALIBER_REGISTRY[name] = props
+end
+
+function GetCaliber(name)
+	return CALIBER_REGISTRY[name]
+end
+
+-- ============================================================
+-- Built-in calibers
+-- ============================================================
+
+RegisterCaliber("12gauge", {
+	damage      = 28,
+	pellets     = 12,
+	spread      = 0.07,
+	range       = 50,
+	bulletType  = "bullet",
+	fullRange   = 8,
+	halfRange   = 25,
+	minFalloff  = 0.15,
+	holeScale   = 0.5,
+	penScale    = 1.0,
+	materials   = {
+		glass     = { 1.8,  40 },
+		wood      = { 1.2,  18 },
+		masonry   = { 0.5,   8 },
+		metal     = { 0.2,   3 },
+		heavymetal= { 0.1,   2 },
+	},
+})
+
+RegisterCaliber("9mm", {
+	damage      = 20,
+	pellets     = 1,
+	spread      = 0.025,
+	range       = 50,
+	bulletType  = "bullet",
+	fullRange   = 10,
+	halfRange   = 30,
+	minFalloff  = 0.15,
+	holeScale   = 0.8,
+	penScale    = 0.3,
+})
+
+RegisterCaliber("5.56nato", {
+	damage      = 35,
+	pellets     = 1,
+	spread      = 0.015,
+	range       = 100,
+	bulletType  = "bullet",
+	fullRange   = 20,
+	halfRange   = 60,
+	minFalloff  = 0.25,
+	holeScale   = 1.0,
+	penScale    = 0.5,
+	materials   = {
+		wood      = { 1.2,  40 },
+		masonry   = { 0.7,  20 },
+		metal     = { 0.4,   8 },
+		heavymetal= { 0.2,   4 },
+	},
+})
+
+RegisterCaliber("7.62nato", {
+	damage      = 50,
+	pellets     = 1,
+	spread      = 0.01,
+	range       = 120,
+	bulletType  = "bullet",
+	fullRange   = 25,
+	halfRange   = 80,
+	minFalloff  = 0.3,
+	holeScale   = 1.0,
+	penScale    = 1.0,
+	materials   = {
+		wood      = { 1.3,  50 },
+		masonry   = { 0.8,  30 },
+		metal     = { 0.5,  12 },
+		heavymetal= { 0.3,   6 },
+	},
+})
+
+RegisterCaliber("50bmg", {
+	damage      = 90,
+	pellets     = 1,
+	spread      = 0,
+	range       = 200,
+	bulletType  = "bullet",
+	fullRange   = 50,
+	halfRange   = 150,
+	minFalloff  = 0.4,
+	holeScale   = 1.2,
+	penScale    = 2.5,
+	materials   = {
+		wood      = { 1.5,  80 },
+		masonry   = { 1.0,  50 },
+		metal     = { 0.7,  25 },
+		heavymetal= { 0.5,  15 },
+		hardmetal = { 0.3,   8 },
+	},
+})
+
+RegisterCaliber("melee", {
+	damage      = 60,
+	pellets     = 3,
+	spread      = 0.2,
+	range       = 3,
+	bulletType  = "bullet",
+	fullRange   = 2,
+	halfRange   = 3,
+	minFalloff  = 0.5,
+	holeScale   = 1.5,
+	penScale    = 0.5,
+	useMaterials = false,
+})
+
+-- ============================================================
 -- Profile creation
 -- ============================================================
 
 function CreateBallisticsProfile(cfg)
+	-- If a caliber is specified, use it as the base and overlay cfg on top
+	if cfg.caliber then
+		local base = CALIBER_REGISTRY[cfg.caliber]
+		if base then
+			local merged = {}
+			for k, v in pairs(base) do merged[k] = v end
+			for k, v in pairs(cfg) do merged[k] = v end
+			merged.caliber = nil  -- don't store the lookup key
+			cfg = merged
+		end
+	end
 	-- Merge custom material overrides with defaults
 	-- Supports both formats:
 	--   materials = { metal = { 0.5, 5 } }       -- new: {mult, range}
