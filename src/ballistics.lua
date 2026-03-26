@@ -1161,36 +1161,36 @@ OptionsMenu = {}
 --- Initialize options from savegame (set defaults if keys don't exist).
 -- Call in server.init.
 function OptionsMenu:Init()
-	shared.toolOptions = shared.toolOptions or {}
-	shared.toolOptions[self.toolId] = shared.toolOptions[self.toolId] or {}
 	for _, f in ipairs(self.fields) do
 		local key = self._prefix .. f.key
-		if f.type == "slider" then
-			if not HasKey(key) then
+		if not HasKey(key) then
+			if f.type == "slider" then
 				SetFloat(key, f.default or 0)
-			end
-			shared.toolOptions[self.toolId][f.key] = GetFloat(key)
-		elseif f.type == "toggle" then
-			if not HasKey(key) then
+			elseif f.type == "toggle" then
 				SetBool(key, f.default or false)
 			end
-			shared.toolOptions[self.toolId][f.key] = GetBool(key)
 		end
 	end
 end
 
---- Get an option value. Reads from shared (works on server and client).
+--- Get an option value. Reads directly from savegame registry (works in any context).
 function OptionsMenu:Get(key)
-	local opts = shared.toolOptions and shared.toolOptions[self.toolId]
-	if opts and opts[key] ~= nil then return opts[key] end
-	-- Fallback: find default
+	local fullKey = self._prefix .. key
 	for _, f in ipairs(self.fields) do
-		if f.key == key then return f.default end
+		if f.key == key then
+			if f.type == "slider" then
+				if HasKey(fullKey) then return GetFloat(fullKey) end
+				return f.default or 0
+			elseif f.type == "toggle" then
+				if HasKey(fullKey) then return GetBool(fullKey) end
+				return f.default or false
+			end
+		end
 	end
 	return nil
 end
 
---- Set an option value. Writes to savegame + shared. HOST only.
+--- Set an option value. Writes to savegame registry. HOST only.
 function OptionsMenu:Set(key, value)
 	local fullKey = self._prefix .. key
 	for _, f in ipairs(self.fields) do
@@ -1200,9 +1200,6 @@ function OptionsMenu:Set(key, value)
 			elseif f.type == "toggle" then
 				SetBool(fullKey, value)
 			end
-			shared.toolOptions = shared.toolOptions or {}
-			shared.toolOptions[self.toolId] = shared.toolOptions[self.toolId] or {}
-			shared.toolOptions[self.toolId][key] = value
 			return
 		end
 	end
@@ -1211,6 +1208,8 @@ end
 --- Toggle the menu open/closed. Call from client when O is pressed.
 function OptionsMenu:Toggle()
 	self.open = not self.open
+	-- Write to registry so server context can read it reliably
+	SetBool("game.mod.menuopen." .. self.toolId, self.open)
 end
 
 --- Check if menu is open.
@@ -1225,8 +1224,10 @@ end
 -- Call once at the top of client.tickPlayer: if IsAnyMenuOpen() then return end
 -- This is automatic — no per-mod code needed beyond that one check.
 function IsAnyMenuOpen()
-	for _, menu in pairs(_OPTIONS_MENUS) do
+	for toolId, menu in pairs(_OPTIONS_MENUS) do
 		if menu.open then return true end
+		-- Also check registry (reliable across server/client contexts)
+		if GetBool("game.mod.menuopen." .. toolId) then return true end
 	end
 	return _MASTER_PANEL_OPEN
 end
@@ -1303,20 +1304,30 @@ function OptionsMenu:Draw(p)
 			local sliderX = LABEL_W + 5
 			local sliderY = y + ROW_H / 2
 			local range = f.max - f.min
-			local norm = (val - f.min) / range
+			if range <= 0 then range = 1 end
+			local step = f.step or 1
 
 			UiPush()
-			UiTranslate(sliderX, sliderY - 1)
+			UiTranslate(sliderX, sliderY)
 			UiAlign("left middle")
+
+			-- Background bar
 			UiColor(0.3, 0.3, 0.3)
 			UiRect(SLIDER_W, 3)
+
+			-- Interactive slider
+			local curNorm = math.max(0, math.min((val - f.min) / range, 1))
+			local sliderResult = UiSlider("ui/common/dot.png", "x", curNorm * SLIDER_W, 0, SLIDER_W)
+			local newNorm = sliderResult / SLIDER_W
+			local newVal = math.floor((newNorm * range + f.min) / step + 0.5) * step
+			newVal = math.max(f.min, math.min(f.max, newVal))
+
+			-- Filled bar up to slider position
 			UiColor(0.2, 0.6, 1)
-			UiRect(norm * SLIDER_W, 3)
-			-- Slider dot (on the bar)
-			norm = UiSlider("ui/common/dot.png", "x", norm * SLIDER_W, 0, SLIDER_W) / SLIDER_W
-			local step = f.step or 1
-			local newVal = math.floor((norm * range + f.min) / step + 0.5) * step
-			if newVal ~= val and IsPlayerHost() then
+			UiRect(newNorm * SLIDER_W, 3)
+
+			-- Always write the slider value (even if "same" — prevents snap-back)
+			if IsPlayerHost() then
 				self:Set(f.key, newVal)
 			end
 			UiPop()
@@ -1327,9 +1338,9 @@ function OptionsMenu:Draw(p)
 			UiAlign("left middle")
 			UiColor(0.7, 0.6, 0.1)
 			if step < 1 then
-				UiText(string.format("%.1f", newVal or val))
+				UiText(string.format("%.1f", newVal))
 			else
-				UiText(math.floor(newVal or val))
+				UiText(math.floor(newVal))
 			end
 			UiPop()
 
@@ -1394,6 +1405,7 @@ function OptionsMenu:Draw(p)
 	UiColor(1, 0.4, 0.4)
 	if UiTextButton("Close", 80, 26) then
 		self.open = false
+		SetBool("game.mod.menuopen." .. self.toolId, false)
 	end
 	UiPop()
 
@@ -1401,6 +1413,7 @@ function OptionsMenu:Draw(p)
 
 	if InputPressed("esc") then
 		self.open = false
+		SetBool("game.mod.menuopen." .. self.toolId, false)
 	end
 end
 
